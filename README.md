@@ -72,13 +72,16 @@ Remove before publishing.
 
 | Phase | Status |
 |------|--------|
-| 01 — chromekit prep (mutex, HWND, Focus) | done |
-| 02 — chromefleet bootstrap (types, skeleton) | done |
-| 03 — dispatcher (queue, critical section) | in progress |
-| 04 — hotkey listener | in progress |
-| 05 — PoC (2-browser, stress 9, hotkey demo) | pending |
+| 01 — chromekit prep (mutex, HWND, Focus) | ✅ done |
+| 02 — chromefleet bootstrap (types, skeleton) | ✅ done |
+| 03 — dispatcher (queue, critical section) | ✅ done |
+| 04 — hotkey listener | ✅ done |
+| 05 — PoC (2-browser, stress 9, hotkey demo) | ✅ done |
+| 06 — testing & stability (>80% coverage) | ⏳ in progress |
+| 07 — hardening (timeouts, retry, logging) | ⏳ planned |
+| 08 — documentation + examples | ⏳ planned |
 
-Plan: [`../chromekit/plans/260509-0552-multi-chrome-fleet/`](../chromekit/plans/260509-0552-multi-chrome-fleet/)
+See [`docs/development-roadmap.md`](docs/development-roadmap.md) for detailed phase breakdown.
 
 ## Platform support
 
