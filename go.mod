@@ -2,7 +2,7 @@ module github.com/tuwibu/chromefleet
 
 go 1.26.2
 
-require github.com/tuwibu/chromekit v0.4.2
+require github.com/tuwibu/chromekit v0.4.5
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b // indirect

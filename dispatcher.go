@@ -161,7 +161,12 @@ func (d *Dispatcher) nativeWorker() {
 			continue
 		}
 
-		if needsNativeCriticalSection(qj.job.Action) {
+		// Route based on action class AND handle backend. Click/Type/Navigate
+		// only need the native critical section when the handle is launched
+		// with native backend — CDP-backed handles run those parallel via
+		// the cdp pool (no OS cursor → no drift check needed).
+		handle := d.fleet.handle(qj.job.BrowserID)
+		if needsNativeCriticalSection(qj.job.Action) && handle != nil && handle.Native {
 			d.runJob(qj, true)
 		} else {
 			select {
@@ -225,11 +230,18 @@ func (d *Dispatcher) executeCriticalWithRetry(ctx context.Context, h *BrowserHan
 	return err
 }
 
-// executeCDPOnly handles ScrollAction / WaitAction without native input.
+// executeCDPOnly handles parallel-safe actions through CDP — Scroll, Wait,
+// plus Click/Type/Navigate when the handle is CDP-backed (Native=false).
+// CDP click/type drives Chromium's internal input pipeline, not the OS
+// cursor/keyboard — no drift check needed, multiple browsers run in
+// parallel.
 func (d *Dispatcher) executeCDPOnly(ctx context.Context, h *BrowserHandle, a Action) error {
 	page := h.Browser.Current()
 	if page == nil {
 		return errors.New("chromefleet: no active page")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	switch act := a.(type) {
 	case ScrollAction:
@@ -237,6 +249,21 @@ func (d *Dispatcher) executeCDPOnly(ctx context.Context, h *BrowserHandle, a Act
 	case WaitAction:
 		_, qerr := page.QuerySelector(act.Selector, act.Timeout)
 		return qerr
+	case ClickAction:
+		return page.Click(act.Selector)
+	case TypeAction:
+		if act.ClearFirst {
+			if err := page.Type(act.Selector, ""); err != nil {
+				return err
+			}
+		}
+		return page.Type(act.Selector, act.Text)
+	case NavigateAction:
+		timeout := act.Timeout
+		if timeout <= 0 {
+			timeout = d.fleet.cfg.defaultTimeout
+		}
+		return page.Navigate(act.URL, timeout)
 	default:
 		return fmt.Errorf("chromefleet: cdp path got unexpected action %s", a.kind())
 	}
