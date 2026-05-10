@@ -70,7 +70,14 @@ func executeCritical(ctx context.Context, f *Fleet, h *BrowserHandle, a Action) 
 		}
 		defer winapi.RestoreLayout(prevLayout)
 
-		return page.TypeHuman(act.Text)
+		if act.ClearFirst {
+			// Already focused after clickAt — ClearInput w/o selector
+			// does Ctrl+A + Delete on the focused element.
+			if err := page.Keyboard().ClearInput(); err != nil {
+				return fmt.Errorf("clearInput: %w", err)
+			}
+		}
+		return page.Keyboard().Type(act.Text)
 
 	default:
 		return fmt.Errorf("executeCritical: unsupported action %s", a.kind())
@@ -116,7 +123,7 @@ func scrollAndQueryCenter(ctx context.Context, page *chromekit.Page, selector st
 // (a human grabbing the mouse mid-flight). On drift, returns errCursorDrift
 // so the caller's retry path kicks in.
 func clickAt(ctx context.Context, f *Fleet, h *BrowserHandle, page *chromekit.Page, cssX, cssY float64) error {
-	if err := page.MoveTo(cssX, cssY); err != nil {
+	if err := page.Mouse().MoveTo(cssX, cssY); err != nil {
 		return fmt.Errorf("moveTo: %w", err)
 	}
 
@@ -140,7 +147,7 @@ func clickAt(ctx context.Context, f *Fleet, h *BrowserHandle, page *chromekit.Pa
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := page.ClickAt(cssX, cssY); err != nil {
+	if err := page.Mouse().ClickAt(cssX, cssY); err != nil {
 		return fmt.Errorf("click: %w", err)
 	}
 	return nil

@@ -31,9 +31,14 @@ func (a ClickAction) validate() error {
 // TypeAction clicks the target first, then types text via native input.
 // Selector is mandatory — typing without a focused target risks the
 // keystrokes landing in another window.
+//
+// ClearFirst, when true, wipes any existing value via Ctrl+A then Delete
+// (chromekit Keyboard().ClearInput) after the click and before typing —
+// safer than relying on the input being empty.
 type TypeAction struct {
-	Selector string
-	Text     string
+	Selector   string
+	Text       string
+	ClearFirst bool
 }
 
 func (TypeAction) kind() string { return "type" }
