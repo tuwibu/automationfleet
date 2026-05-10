@@ -1,0 +1,363 @@
+package chromefleet
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+)
+
+// Logger is what chromefleet writes diagnostic lines to. Wire your own (zap,
+// zerolog, log/slog) or use NoopLogger. Keep it allocation-light — the
+// dispatcher logs once per job.
+type Logger interface {
+	Infof(format string, args ...any)
+	Warnf(format string, args ...any)
+	Errorf(format string, args ...any)
+}
+
+// NoopLogger silently drops every line.
+type NoopLogger struct{}
+
+func (NoopLogger) Infof(string, ...any)  {}
+func (NoopLogger) Warnf(string, ...any)  {}
+func (NoopLogger) Errorf(string, ...any) {}
+
+// Option configures New.
+type Option func(*config)
+
+type config struct {
+	logger         Logger
+	defaultTimeout time.Duration
+	cdpWorkers     int
+
+	// Stop hotkey aborts every in-flight + pending job. Default DISABLED —
+	// users who want abort semantics opt-in via WithStopHotkey.
+	stopHotkey    Hotkey
+	stopEnabled   bool
+	onStop        func(reason string)
+
+	// Pause/Resume hotkey pair. Default Ctrl+F10 / Ctrl+F11. Pause drains
+	// in-flight, then blocks the worker on a cond — resume unblocks.
+	pauseHotkey   Hotkey
+	pauseEnabled  bool
+	onPause       func(reason string)
+	resumeHotkey  Hotkey
+	resumeEnabled bool
+	onResume      func(reason string)
+
+	driftThreshold int
+}
+
+// DefaultPauseHotkey is Ctrl+F10. F-keys + Ctrl rarely conflict with global
+// shortcuts on Windows / VS Code / Chrome.
+var DefaultPauseHotkey = Hotkey{Mods: ModCtrl, Key: KeyF10}
+
+// DefaultResumeHotkey is Ctrl+F11.
+var DefaultResumeHotkey = Hotkey{Mods: ModCtrl, Key: KeyF11}
+
+func defaultConfig() *config {
+	return &config{
+		logger:         NoopLogger{},
+		defaultTimeout: 10 * time.Second,
+		cdpWorkers:     4,
+
+		stopHotkey:  DefaultStopHotkey,
+		stopEnabled: false, // opt-in: stop is destructive (no resume)
+
+		pauseHotkey:   DefaultPauseHotkey,
+		pauseEnabled:  true,
+		resumeHotkey:  DefaultResumeHotkey,
+		resumeEnabled: true,
+
+		driftThreshold: 5,
+	}
+}
+
+func WithLogger(l Logger) Option {
+	return func(c *config) {
+		if l != nil {
+			c.logger = l
+		}
+	}
+}
+
+func WithDefaultTimeout(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.defaultTimeout = d
+		}
+	}
+}
+
+func WithCDPWorkers(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.cdpWorkers = n
+		}
+	}
+}
+
+// WithStopHotkey enables the abort combo (default Ctrl+Alt+Shift+S) and
+// overrides the key. Stop is destructive — fires AbortAll, no resume.
+func WithStopHotkey(h Hotkey) Option {
+	return func(c *config) {
+		c.stopHotkey = h
+		c.stopEnabled = true
+	}
+}
+
+// WithStopHotkeyDisabled is now a no-op (stop is disabled by default).
+// Kept for backwards-compat with existing examples.
+func WithStopHotkeyDisabled() Option {
+	return func(c *config) { c.stopEnabled = false }
+}
+
+// WithPauseHotkey overrides the default Ctrl+F10 pause combo.
+func WithPauseHotkey(h Hotkey) Option {
+	return func(c *config) {
+		c.pauseHotkey = h
+		c.pauseEnabled = true
+	}
+}
+
+// WithPauseHotkeyDisabled disables the pause hotkey listener.
+func WithPauseHotkeyDisabled() Option {
+	return func(c *config) { c.pauseEnabled = false }
+}
+
+// WithResumeHotkey overrides the default Ctrl+F11 resume combo.
+func WithResumeHotkey(h Hotkey) Option {
+	return func(c *config) {
+		c.resumeHotkey = h
+		c.resumeEnabled = true
+	}
+}
+
+// WithResumeHotkeyDisabled disables the resume hotkey listener.
+func WithResumeHotkeyDisabled() Option {
+	return func(c *config) { c.resumeEnabled = false }
+}
+
+// OnStop registers a callback fired when AbortAll runs (hotkey, manual, or
+// fleet shutdown).
+func OnStop(cb func(reason string)) Option {
+	return func(c *config) { c.onStop = cb }
+}
+
+// OnPause registers a callback fired when the pause hotkey hits or Pause()
+// is called. The callback runs on the listener goroutine — keep it short.
+func OnPause(cb func(reason string)) Option {
+	return func(c *config) { c.onPause = cb }
+}
+
+// OnResume registers a callback fired when the resume hotkey hits or
+// Resume() is called.
+func OnResume(cb func(reason string)) Option {
+	return func(c *config) { c.onResume = cb }
+}
+
+// WithDriftThresholdPx tunes the cursor-drift guard. If the OS cursor moves
+// further than this between MoveTo and the next op, the dispatcher assumes
+// human interference and retries the job.
+func WithDriftThresholdPx(px int) Option {
+	return func(c *config) {
+		if px > 0 {
+			c.driftThreshold = px
+		}
+	}
+}
+
+// Fleet is the public face of the orchestrator. Construct with New, register
+// browsers, Submit jobs, Stop when done.
+type Fleet struct {
+	cfg    *config
+	log    Logger
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	mu       sync.RWMutex
+	handles  map[string]*BrowserHandle
+	stopped  bool
+	stopOnce sync.Once
+
+	dispatcher *Dispatcher
+	hotkeyDone chan struct{}
+}
+
+// New builds a Fleet. Call Start() before Submit.
+func New(opts ...Option) *Fleet {
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &Fleet{
+		cfg:     cfg,
+		log:     cfg.logger,
+		ctx:     ctx,
+		cancel:  cancel,
+		handles: make(map[string]*BrowserHandle),
+	}
+	f.dispatcher = newDispatcher(f)
+	return f
+}
+
+// Register adds a browser handle to the fleet. Must be called before Submit
+// references the same BrowserID.
+func (f *Fleet) Register(h *BrowserHandle) error {
+	if err := h.validate(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.handles[h.ID]; exists {
+		return errors.New("chromefleet: browser id already registered: " + h.ID)
+	}
+	f.handles[h.ID] = h
+	return nil
+}
+
+// Start spawns dispatcher workers and the hotkey listener (if any hotkey
+// enabled). Idempotent — calling twice is a no-op.
+func (f *Fleet) Start() {
+	f.dispatcher.start()
+
+	bindings := make([]HotkeyBinding, 0, 3)
+	if f.cfg.pauseEnabled {
+		bindings = append(bindings, HotkeyBinding{
+			Hotkey: f.cfg.pauseHotkey,
+			OnFire: func() { f.Pause("hotkey") },
+		})
+	}
+	if f.cfg.resumeEnabled {
+		bindings = append(bindings, HotkeyBinding{
+			Hotkey: f.cfg.resumeHotkey,
+			OnFire: func() { f.Resume("hotkey") },
+		})
+	}
+	if f.cfg.stopEnabled {
+		bindings = append(bindings, HotkeyBinding{
+			Hotkey: f.cfg.stopHotkey,
+			OnFire: func() { f.requestStop("hotkey") },
+		})
+	}
+	if len(bindings) == 0 {
+		return
+	}
+	f.hotkeyDone = make(chan struct{})
+	go func() {
+		defer close(f.hotkeyDone)
+		if err := runHotkeyMultiListener(f.ctx, bindings); err != nil {
+			f.log.Warnf("chromefleet: hotkey listener: %v", err)
+		}
+	}()
+}
+
+// Pause stops the dispatcher from popping new jobs. In-flight jobs continue
+// to completion. Idempotent — calling twice fires OnPause once.
+func (f *Fleet) Pause(reason string) {
+	if f.dispatcher.pause() {
+		f.log.Infof("chromefleet: pause requested (%s)", reason)
+		if f.cfg.onPause != nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						f.log.Errorf("chromefleet: OnPause panic: %v", r)
+					}
+				}()
+				f.cfg.onPause(reason)
+			}()
+		}
+	}
+}
+
+// Resume unblocks the dispatcher to pop pending jobs. Idempotent — fires
+// OnResume only when transitioning from paused to running.
+func (f *Fleet) Resume(reason string) {
+	if f.dispatcher.resume() {
+		f.log.Infof("chromefleet: resume requested (%s)", reason)
+		if f.cfg.onResume != nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						f.log.Errorf("chromefleet: OnResume panic: %v", r)
+					}
+				}()
+				f.cfg.onResume(reason)
+			}()
+		}
+	}
+}
+
+// Submit enqueues a job. Returns a buffered channel that receives exactly one
+// JobResult — Done, Failed, Cancelled, or Rejected. The channel is closed
+// after the result lands.
+func (f *Fleet) Submit(j Job) (<-chan JobResult, error) {
+	if j.Action == nil {
+		return nil, errors.New("chromefleet: Job.Action required")
+	}
+	if err := j.Action.validate(); err != nil {
+		return nil, err
+	}
+	f.mu.RLock()
+	if f.stopped {
+		f.mu.RUnlock()
+		return nil, ErrFleetStopped
+	}
+	if _, ok := f.handles[j.BrowserID]; !ok {
+		f.mu.RUnlock()
+		return nil, ErrUnknownBrowser
+	}
+	f.mu.RUnlock()
+
+	if j.Timeout <= 0 {
+		j.Timeout = f.cfg.defaultTimeout
+	}
+	return f.dispatcher.enqueue(j), nil
+}
+
+// Stop cancels in-flight jobs, drains the queue, and tears down workers.
+// Idempotent.
+func (f *Fleet) Stop() {
+	f.requestStop("stop")
+	if f.hotkeyDone != nil {
+		<-f.hotkeyDone
+	}
+}
+
+// Wait blocks until the queue is fully drained (no in-flight, no pending).
+// Useful for "submit N then wait" patterns. Returns immediately if stopped.
+func (f *Fleet) Wait() {
+	f.dispatcher.waitDrained()
+}
+
+// requestStop is the single funnel for shutting down the dispatcher.
+// Idempotent via stopOnce — safe to call from hotkey, Stop, or AbortAll.
+func (f *Fleet) requestStop(reason string) {
+	f.stopOnce.Do(func() {
+		f.log.Infof("chromefleet: stop requested (%s)", reason)
+		f.mu.Lock()
+		f.stopped = true
+		f.mu.Unlock()
+		if f.cfg.onStop != nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						f.log.Errorf("chromefleet: OnStop panic: %v", r)
+					}
+				}()
+				f.cfg.onStop(reason)
+			}()
+		}
+		f.dispatcher.abortAll(reason)
+		f.cancel()
+	})
+}
+
+// handle looks up a registered browser by id; returns nil when missing.
+func (f *Fleet) handle(id string) *BrowserHandle {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.handles[id]
+}

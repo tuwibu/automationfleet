@@ -1,0 +1,22 @@
+# Build artifacts
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User-data dirs spawned by Chrome during examples
+/tmp/
+/profiles/
+.claude/
+plans/
+.claudex.lock
