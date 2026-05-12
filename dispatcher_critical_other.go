@@ -32,12 +32,17 @@ func executeCritical(_ context.Context, f *Fleet, h *BrowserHandle, a Action) er
 		}
 		return page.Navigate(act.URL, timeout)
 	case ClickAction:
-		return page.Click(act.Selector)
+		return page.Mouse().Click(act.Selector)
 	case TypeAction:
-		if err := page.Click(act.Selector); err != nil {
+		if err := page.Mouse().FocusElement(act.Selector); err != nil {
 			return err
 		}
-		return page.Type(act.Selector, act.Text)
+		if act.ClearFirst {
+			if err := page.Keyboard().ClearInput(); err != nil {
+				return err
+			}
+		}
+		return page.Keyboard().TypeHuman(act.Text)
 	default:
 		return fmt.Errorf("executeCritical: unsupported action %s", a.kind())
 	}

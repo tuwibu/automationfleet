@@ -77,7 +77,9 @@ func executeCritical(ctx context.Context, f *Fleet, h *BrowserHandle, a Action) 
 				return fmt.Errorf("clearInput: %w", err)
 			}
 		}
-		return page.Keyboard().Type(act.Text)
+		// TypeHuman: 80-220ms/char + 5% typo (backspace + retype). Mechanical
+		// Keyboard.Type 50-150ms không có typo → anti-bot detect.
+		return page.Keyboard().TypeHuman(act.Text)
 
 	default:
 		return fmt.Errorf("executeCritical: unsupported action %s", a.kind())

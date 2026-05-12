@@ -135,7 +135,7 @@ func main() {
 		}
 
 		if err := fleet.Register(&chromefleet.BrowserHandle{
-			ID: sp.id, Browser: b, X: sp.x, Y: sp.y, Scale: 1.0,
+			ID: sp.id, Browser: b, Native: true, X: sp.x, Y: sp.y, Scale: 1.0,
 		}); err != nil {
 			stdlog.Fatalf("register %s: %v", sp.id, err)
 		}

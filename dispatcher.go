@@ -250,14 +250,21 @@ func (d *Dispatcher) executeCDPOnly(ctx context.Context, h *BrowserHandle, a Act
 		_, qerr := page.QuerySelector(act.Selector, act.Timeout)
 		return qerr
 	case ClickAction:
-		return page.Click(act.Selector)
+		// Mouse().Click = bezier glide + dwell + click. page.Click =
+		// chromedp.Click instant teleport → anti-bot detect.
+		return page.Mouse().Click(act.Selector)
 	case TypeAction:
+		// FocusElement: bezier glide → click → verify activeElement.
+		// Sau đó TypeHuman gõ với 80-220ms/char + 5% typo.
+		if err := page.Mouse().FocusElement(act.Selector); err != nil {
+			return err
+		}
 		if act.ClearFirst {
-			if err := page.Type(act.Selector, ""); err != nil {
+			if err := page.Keyboard().ClearInput(); err != nil {
 				return err
 			}
 		}
-		return page.Type(act.Selector, act.Text)
+		return page.Keyboard().TypeHuman(act.Text)
 	case NavigateAction:
 		timeout := act.Timeout
 		if timeout <= 0 {
