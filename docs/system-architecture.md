@@ -2,7 +2,11 @@
 
 ## High-Level Overview
 
-Chromefleet is an orchestrator layer that multiplexes N Chrome instances over a single serialized native input worker. The critical insight: **the OS has one mouse cursor**. Allowing concurrent threads to issue mouse + keyboard commands creates races (typing while unfocused, clicking while cursor drifts, etc.). The solution is a single native worker thread that executes a complete action atomically.
+Chromefleet is an orchestrator layer that multiplexes N Chrome instances with **per-handle routing**: browsers registered with `Native=true` route through a single serialized native input worker; browsers with `Native=false` (default) execute actions via a parallel CDP worker pool with human input (bezier cursor glide, TypeHuman, ClearInput). This dual-path design balances anti-bot guarantees (native path) with throughput (CDP path).
+
+The critical insight: **when using native input, the OS has one mouse cursor**. Allowing concurrent threads to issue mouse + keyboard commands creates races (typing while unfocused, clicking while cursor drifts, etc.). The native worker serializes these operations atomically.
+
+The CDP path achieves anti-bot safety via human-like behavior (Mouse.Click with bezier glide, Keyboard.TypeHuman 80–220ms/char with 5% typo rate, ClearInput via Ctrl+A→Delete) without native OS integration, enabling parallel execution across multiple browsers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -15,6 +19,7 @@ Chromefleet is an orchestrator layer that multiplexes N Chrome instances over a 
 ┌────────────────────────▼────────────────────────────────────────┐
 │ Fleet (Orchestrator)                                            │
 │  ├─ handles: map[string]*BrowserHandle (registered browsers)    │
+│  │   Each BrowserHandle has Native bool flag                    │
 │  ├─ mu: RWMutex (guards handles, stopped state)                │
 │  └─ dispatcher: *Dispatcher                                     │
 └─────────────────────────────────────────────────────────────────┘
@@ -26,22 +31,26 @@ Chromefleet is an orchestrator layer that multiplexes N Chrome instances over a 
 │  ├─ queue: priorityQueue (heap-based, priority desc + FIFO)    │
 │  ├─ mu: Mutex (guards queue, paused, insertSeq)               │
 │  ├─ cond: *sync.Cond (pause/resume, queue-wake)               │
-│  ├─ nativeWorker: goroutine (1 thread, critical section)      │
-│  ├─ cdpWorkers: N goroutines (parallel, non-native ops)       │
-│  └─ hotkeyListener: goroutine (registers hotkeys, fires abort) │
+│  ├─ nativeWorker: goroutine (1 thread, per-handle Native=true) │
+│  ├─ cdpWorkers: N goroutines (parallel, per-handle Native=false)
+│  └─ hotkeyListener: goroutine (registers hotkeys, fires stop)  │
 └─────────────────────────────────────────────────────────────────┘
-         │                                │                    │
-         ├─ ClickAction / TypeAction      ├─ NavigateAction   ├─ Hotkey events
-         │                                │                    │
-         ▼                                ▼                    ▼
-    [CRITICAL SECTION]              [CDP WORKERS]         [HOTKEY LISTENER]
-    (atomic)                        (parallel)              (system-level)
-     • Focus                        • Evaluate              • Ctrl+Alt+Shift+S
-     • ScrollIntoView              • Screenshot               → AbortAll
-     • BoundingBox                 • WaitForNav
-     • MouseMove                   • etc.
-     • Drift-guard
-     • Click [±Type]
+         │                           │                       │
+         │ handle.Native=true        │ handle.Native=false  │ Hotkey events
+         │ (native critical)         │ (CDP human input)    │
+         ▼                           ▼                       ▼
+    [NATIVE WORKER]            [CDP WORKER POOL]      [HOTKEY LISTENER]
+    Click/Type/Navigate:       Click/Type/Navigate:   Ctrl+Alt+Shift+S
+     • Focus                    • Mouse.Click           → Stop()
+     • ScrollIntoView            (bezier glide)
+     • BoundingBox             • Mouse.FocusElement
+     • MouseMove               • Keyboard.ClearInput
+     • Drift-guard              (if ClearFirst=true)
+     • executeCDPOnly           • Keyboard.TypeHuman
+       (MouseClick, FocusElem,   (80–220ms/char)
+        ClearInput, TypeHuman)  • Page.Navigate
+     • Retry loop               (parallel)
+       (default 3 retries)
      • IME-guard
          │
          ▼
@@ -87,14 +96,13 @@ type Fleet struct {
 
 **Public API:**
 - `New(opts ...Option) *Fleet` — constructor.
-- `Register(h *BrowserHandle) error` — add browser.
-- `Start() error` — spin up workers.
-- `Stop() error` — teardown, wait for workers.
-- `Submit(j Job) (chan JobResult, error)` — enqueue work.
-- `Wait() error` — block until Stop is called.
-- `Pause()` — signal dispatcher to block after current job.
-- `Resume()` — unblock dispatcher.
-- `AbortAll()` — cancel in-flight + pending.
+- `Register(h *BrowserHandle) error` — add browser. BrowserHandle.Native field determines routing.
+- `Start()` — spin up workers.
+- `Stop()` — teardown, wait for workers. Stops all job processing; in-flight jobs finish cleanly, pending jobs deliver StatusCancelled.
+- `Submit(j Job) (<-chan JobResult, error)` — enqueue work.
+- `Wait()` — block until Stop is called.
+- `Pause(reason string)` — signal dispatcher to block after current job (graceful).
+- `Resume(reason string)` — unblock dispatcher immediately.
 
 ### 2. Dispatcher (Worker Orchestrator)
 
@@ -142,71 +150,94 @@ Ordering: priority desc, then insertSeq asc
 Example: [P=10 seq=1, P=10 seq=2, P=5 seq=3] → dequeue P=10 seq=1 first
 ```
 
-### 3. Critical Section (Native Worker)
+### 3. Per-Handle Routing & Critical Section Design
 
-**Execution model:** Single goroutine that atomically executes a complete action against a single browser.
+**Routing decision (nativeWorker loop):**
+```
+For each ClickAction / TypeAction / NavigateAction:
+  if needsNativeCriticalSection(action) && handle.Native:
+    → executeCriticalWithRetry (native worker, serial)
+  else if handle.Native=false:
+    → cdpJobs channel (CDP worker pool, parallel)
+  else:
+    → error: "action requires native but handle.Native=false"
+```
 
-**Flow for ClickAction:**
+**Flow for ClickAction on Native handle (handle.Native=true):**
 ```
 1. Dequeue job from priorityQueue
 2. Acquire Fleet.mu read-lock (validate BrowserHandle still exists)
 3. Get Browser ptr + screen coords (X, Y, Scale)
-4. === CRITICAL SECTION BEGINS ===
+4. === NATIVE CRITICAL SECTION BEGINS ===
 5. Browser.Focus() — bring window to foreground
 6. Page.ScrollIntoView(Selector) — scroll target into viewport
 7. Page.BoundingBox(Selector) — fetch element bbox
 8. MouseMove(x, y) — move cursor to center of bbox
-9. DriftGuard checkpoint: GetCursorPos() — verify cursor hasn't moved
-10. If drift detected: retry once (goto 3)
-11. Browser.Click() — native click
-12. === CRITICAL SECTION ENDS ===
-13. resCh ← JobResult{Status: Done, Took: elapsed}
+9. executeCriticalWithRetry loop (default retries=3):
+     a. DriftGuard checkpoint: GetCursorPos() — verify cursor hasn't moved
+     b. If drift > threshold: log, sleep driftRetryDelay (250ms), retry
+     c. Proceed to Click
+     d. Break loop on success
+10. === NATIVE CRITICAL SECTION ENDS ===
+11. resCh ← JobResult{Status: Done, Took: elapsed}
 ```
 
-**Flow for TypeAction (extends Click):**
+**Flow for TypeAction on Native handle (handle.Native=true):**
 ```
-1–12. Same as ClickAction
-13. IME Guard: GetCurrentKeyboardLayout, ForceENUSLayout
-14. Browser.Type(text) — native keyboard input
-15. Restore keyboard layout
-16. === CRITICAL SECTION ENDS ===
-17. resCh ← JobResult{Status: Done, Took: elapsed}
+1–10. Same as ClickAction
+11. IME Guard: GetCurrentKeyboardLayout, ForceENUSLayout
+12. Keyboard.TypeHuman(text) — native keyboard input (80–220ms/char)
+13. Restore keyboard layout
+14. === NATIVE CRITICAL SECTION ENDS ===
+15. resCh ← JobResult{Status: Done, Took: elapsed}
 ```
 
-**Flow for NavigateAction (non-critical):**
+**Flow for ClickAction on CDP handle (handle.Native=false):**
 ```
 1. Dequeue job from priorityQueue
-2. Acquire Fleet.mu read-lock
-3. Get Browser ptr
-4. === NO CRITICAL SECTION ===
-5. Browser.Page.Navigate(URL) — async via CDP
-6. Browser.Page.WaitForNavigation() — block until navigation completes
-7. === END ===
-8. resCh ← JobResult{Status: Done, Took: elapsed}
+2. Route to cdpJobs channel (non-blocking)
+3. === CDP WORKER PROCESSES (parallel) ===
+4. Page.Mouse().Click(Selector) — bezier glide cursor move + dwell (anti-bot safe)
+5. resCh ← JobResult{Status: Done, Took: elapsed}
 ```
 
-**Why NavigateAction is parallel:**
-- No native input involved (no mouse/keyboard).
-- No focus arbitration required.
-- Multiple browsers can navigate concurrently without cross-window risk.
+**Flow for TypeAction on CDP handle (handle.Native=false):**
+```
+1–3. Same routing as ClickAction
+4. Page.Mouse().FocusElement(Selector) — scroll + focus
+5. If TypeAction.ClearFirst=true: Keyboard().ClearInput() (Ctrl+A → Delete)
+6. Keyboard().TypeHuman(text) — human-like typing (80–220ms/char, 5% typo)
+7. resCh ← JobResult{Status: Done, Took: elapsed}
+```
 
-**Drift Guard Design:**
+**Flow for NavigateAction (routed based on handle.Native):**
+```
+If handle.Native=true:
+  1–11. Run through native critical section for omnibox input (Ctrl+L → Ctrl+A → type URL)
+Else handle.Native=false:
+  1. Page.Navigate(URL) — CDP call, no critical section needed
+  2. WaitForNavigation() — block until done
+3. resCh ← JobResult{Status: Done, Took: elapsed}
+```
+
+**Drift Guard Design (Native only):**
 ```
 Assumption: Human interference is rare (devs testing, QA monitoring).
 Threshold: Default 5 px (configurable via WithDriftThresholdPx).
 
-Flow:
+Flow (executeCriticalWithRetry):
 1. MouseMove(x, y) → driver issues native move
 2. GetCursorPos() → read OS cursor position
 3. distance = sqrt((x - curPos.x)^2 + (y - curPos.y)^2)
-4. if distance > threshold:
-     - log.Warnf("cursor drift detected; retrying")
-     - retries++
-     - if retries < 2: goto step 1 (retry once)
-     - else: return errCursorDrift
-5. Proceed to Click
+4. if distance > threshold && retries_remaining > 0:
+     - log.Warnf("cursor drift detected; retrying %d/%d", attempt, 1+driftRetries)
+     - sleep(driftRetryDelay)
+     - goto step 1
+5. if distance > threshold && retries_remaining == 0:
+     - return errCursorDrift
+6. Proceed to Click
 
-Result: Single retry on drift; if drift persists, job fails with StatusFailed.
+Result: Up to 1 + driftRetries total attempts (default 4); if drift persists, job fails with StatusFailed.
 ```
 
 **IME Guard Design (Windows only):**
@@ -281,23 +312,37 @@ func (d *Dispatcher) Resume() {
 - Resume is *immediate*: blocks for only the lock acquisition.
 - No jobs are lost during pause; they remain in queue.
 
-### 5. Hotkey Abort Path
+### 5. Stop Path (Fleet.Stop or Hotkey Ctrl+Alt+Shift+S)
+
+**Note:** Stop hotkey (Ctrl+Alt+Shift+S) is DISABLED by default. Enable via `WithStopHotkey(hk)`. Pause (Ctrl+F10) and Resume (Ctrl+F11) are enabled by default.
 
 **State machine:**
 ```
-[RUNNING] ──Ctrl+Alt+Shift+S──▶ [ABORTING]
-                                   │
-                                   ├─ In-flight job: run to critical-section boundary, finish
-                                   ├─ Pending jobs: remove from queue, deliver StatusCancelled
-                                   └─▶ [STOPPED]
+[RUNNING] ──Ctrl+Alt+Shift+S or Fleet.Stop()──▶ [STOPPING]
+   │                                              │
+   │                                              ├─ In-flight job: run to critical-section boundary, finish
+   │                                              ├─ Pending jobs: remove from queue, deliver StatusCancelled
+   └──────────────────────────────◀────────────── [STOPPED]
 
-[STOPPED] – no resume; AbortAll is destructive.
+[STOPPED] – no resume; Stop is destructive.
 ```
 
 **Implementation:**
 ```go
-// AbortAll() in Dispatcher
-func (d *Dispatcher) AbortAll() {
+// Stop() in Fleet
+func (f *Fleet) Stop() {
+    f.stopOnce.Do(func() {
+        f.mu.Lock()
+        f.stopped = true
+        f.mu.Unlock()
+        f.cancel() // cancel context, signal all workers
+        f.dispatcher.requestStop() // internal: drain queue, mark stopped
+        <-f.hotkeyDone // wait for hotkey listener to exit
+    })
+}
+
+// requestStop() in Dispatcher
+func (d *Dispatcher) requestStop() {
     d.mu.Lock()
     defer d.mu.Unlock()
     d.stopped = true
@@ -332,8 +377,8 @@ func (d *Dispatcher) enqueue(j Job) chan JobResult {
 **Guarantees:**
 - In-flight job completes cleanly (no mid-operation interrupt).
 - Pending jobs are cancelled immediately (no queue processing).
-- No new jobs accepted after AbortAll (Submit returns StatusRejected).
-- Stop() waits for in-flight to finish (inflight.Wait()).
+- No new jobs accepted after Stop (Submit returns StatusRejected).
+- Fleet.Stop() waits for in-flight to finish (via inflight.Wait()).
 
 ### 6. Hotkey Listener (Windows)
 
@@ -379,7 +424,7 @@ func ListenHotkey(ctx context.Context, hk Hotkey, onFire func() error) error {
 
 ### 7. CDP Worker Pool
 
-**Purpose:** Handle non-native actions (Navigate, Evaluate, Screenshot, WaitForNav) in parallel.
+**Purpose:** Handle parallel human-input actions (Click/Type/Navigate on Native=false handles) and other CDP-only operations in parallel.
 
 **Design:**
 ```go
@@ -391,10 +436,19 @@ func (d *Dispatcher) cdpWorker(id int) {
     }
 }
 
-// nativeWorker routes NavigateAction to CDP queue
-case *NavigateAction:
-    d.cdpJobs ← qj // non-blocking; queue is unbuffered but drained by N workers
+// nativeWorker routes actions based on handle.Native
+if handle.Native:
+    // native path: executeCriticalWithRetry
+else:
+    // CDP pool: d.cdpJobs ← qj
 ```
+
+**Action Routing to CDP Pool (handle.Native=false):**
+- ClickAction: Mouse().Click(selector) with bezier glide + dwell
+- TypeAction: Mouse().FocusElement(selector), optional Keyboard().ClearInput, Keyboard().TypeHuman(text)
+- NavigateAction: Page.Navigate(url), Page.WaitForNavigation()
+
+All three execute with human-like behavior (anti-bot safe) and run in parallel across the worker pool.
 
 **Scaling:**
 - Default: 4 CDP workers (configurable via WithCDPWorkers).
@@ -444,12 +498,14 @@ User calls: resCh := fleet.Submit(Job{BrowserID: "b1", Action: ClickAction{...},
 
 ## Critical Invariants
 
-1. **Single native worker:** Only one Browser.Focus/Click/Type/MouseMove at a time across the entire fleet.
-2. **Serialized input:** No cross-window input races; all native operations are atomic within the critical section.
-3. **Pause graceful:** Current job finishes; paused flag blocks next queue checkout.
-4. **Abort destructive:** No resume after AbortAll; in-flight finishes, pending is dropped.
-5. **No goroutine leaks:** All workers blocked on context.Done or channel close by Stop().
-6. **Result delivery:** Every job gets exactly one result on its resCh (except on queue drain, where it's dropped).
+1. **Per-handle routing:** Handle.Native field determines whether an action uses native critical section (serial) or CDP pool (parallel).
+2. **Single native worker:** Only one native action runs at a time; all native operations are atomic within the critical section.
+3. **Serialized native input:** No cross-window input races when using Native=true; all operations are atomic.
+4. **Parallel CDP input:** Native=false handles execute via CDP pool with human-like behavior (bezier, TypeHuman, ClearInput) — parallel but anti-bot safe.
+5. **Pause graceful:** Current job finishes; paused flag blocks next queue checkout.
+6. **Stop destructive:** No resume after Stop; in-flight finishes, pending is dropped.
+7. **No goroutine leaks:** All workers blocked on context.Done or channel close by Stop().
+8. **Result delivery:** Every job gets exactly one result on its resCh (except on queue drain, where it's dropped).
 
 ## Performance Characteristics
 

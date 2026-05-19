@@ -1,13 +1,13 @@
 # Development Roadmap
 
-**Current Date:** 2026-05-10  
-**Project Status:** Library complete (MVP), sparse test coverage  
-**Next Focus:** Test suite expansion, stability hardening, documentation
+**Current Date:** 2026-05-17  
+**Project Status:** Unreleased (latest git tag v0.2.3) — Dual-path routing (native + CDP human input), sparse test coverage  
+**Next Focus:** Test suite expansion (Phase 06 active), stability hardening, documentation
 
 ## Completed Phases
 
 ### Phase 01: chromekit Prep
-**Status:** ✅ Done (chromekit v0.2.0)
+**Status:** ✅ Done (chromekit v0.6.1 — human input implementations)
 
 - Mutex-protected window focus (SetWindowForeground).
 - HWND (window handle) support for multi-monitor cursor math.
@@ -42,17 +42,11 @@
 - Graceful teardown (UnregisterHotkey on context.Done).
 - Non-Windows stubs (safe no-op on macOS/Linux).
 
-### Phase 05: PoC + Examples
-**Status:** ✅ Done
+### Phase 05: PoC + Examples (v0.2.0)
+**Status:** ✅ Done → ✅ Consolidated (2026-05-17, unreleased)
 
-- hotkey_demo: Ctrl+Alt+Shift+S abort flow.
-- stress_nine: 9 browsers, random jobs, latency profiling.
-- two_browser: Cross-window input isolation verification.
-- nine_navigate: Concurrent multi-browser navigation.
-- pause_resume_demo: Pause/resume hotkey flow.
-- stress_omnibox_click: Repeated navigation + clicks.
-- pid_smoke, omnibox_smoke: Sanity checks.
-- testpage: Shared test server for examples.
+- Archived: hotkey_demo, stress_nine, two_browser, nine_navigate, pause_resume_demo, stress_omnibox_click, pid_smoke, omnibox_smoke.
+- **Current:** five_browser_steps (regression test for Native flag + TypeAction.ClearFirst), testpage (shared test server).
 
 ---
 

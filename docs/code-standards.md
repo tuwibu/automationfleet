@@ -86,14 +86,16 @@ func (a ClickAction) validate() error {
 **Exported:**
 - Types: `Fleet`, `Job`, `JobResult`, `JobID`, `JobStatus`, `Action`, `ClickAction`, `TypeAction`, `NavigateAction`, `BrowserHandle`, `Hotkey`, `Modifier`, `Key`, `Logger`, `NoopLogger`, `HotkeyBinding`.
 - Functions: `New`, `ParseHotkey`, `NewHotkeyBinding`.
-- Options: `WithLogger`, `WithDefaultTimeout`, `WithCDPWorkers`, `WithStopHotkey`, `WithStopHotkeyDisabled`, `WithPauseHotkey`, `WithPauseHotkeyDisabled`, `WithResumeHotkey`, `WithResumeHotkeyDisabled`, `OnStop`, `OnPause`, `OnResume`, `WithDriftThresholdPx`.
+- Options: `WithLogger`, `WithDefaultTimeout`, `WithCDPWorkers`, `WithStopHotkey`, `WithStopHotkeyDisabled`, `WithPauseHotkey`, `WithPauseHotkeyDisabled`, `WithResumeHotkey`, `WithResumeHotkeyDisabled`, `OnStop`, `OnPause`, `OnResume`, `WithDriftThresholdPx`, `WithDriftRetries`, `WithDriftRetryDelay`.
 - Constants: `StatusDone`, `StatusFailed`, `StatusCancelled`, `StatusRejected`, `ModCtrl`, `ModAlt`, `ModShift`, `ModWin`, `KeyA`–`KeyZ`, `KeyF1`–`KeyF12`, `DefaultStopHotkey`, `DefaultPauseHotkey`, `DefaultResumeHotkey`.
 
 **Unexported:**
 - Types: `config`, `Dispatcher`, `queuedJob`, `priorityQueue`.
-- Functions: `nativeWorker`, `cdpWorker`, `enqueue`, `deliver`, `nextJobID`, `newDispatcher`, `start`, `stop`.
+- Functions: `nativeWorker`, `cdpWorker`, `enqueue`, `deliver`, `nextJobID`, `newDispatcher`, `start`, `stop`, `executeCriticalWithRetry`, `executeCDPOnly`.
 
 **Invariant:** Fleet methods (Register, Submit, Start, Stop, Pause, Resume) hold mu locks to synchronize access to handles, queue, and dispatcher state. No public exposure of internal mutex.
+
+**Recently added (unreleased):** Options now include `WithDriftRetries(int)` and `WithDriftRetryDelay(time.Duration)` for configurable drift retry behavior.
 
 ### Internal Package (`internal/winapi`)
 **Purpose:** Platform-specific Windows API wrappers + cross-platform stubs.
@@ -278,8 +280,7 @@ if err := h.validate(); err != nil {
 
 ### go.mod
 - `go 1.26.2`.
-- `require github.com/tuwibu/chromekit v0.2.0`.
-- `replace github.com/tuwibu/chromekit => ../chromekit` (local dev only; remove before publishing).
+- `require github.com/tuwibu/chromekit v0.6.1` (published version; no replace directive).
 
 ### Build Tags for Platform Safety
 - Single binary: includes only target platform code.

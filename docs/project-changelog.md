@@ -28,6 +28,46 @@ All notable changes to chromefleet are documented here. Format: date, version, s
 
 ---
 
+## [Unreleased] — 2026-05-17 (not yet tagged; latest git tag: v0.2.3)
+
+### Added
+- **Per-handle Native routing:** BrowserHandle now has `Native bool` field. When Native=true, actions route through single native worker with drift guard (default 3 retries, 250ms delay). When Native=false (default), actions route through parallel CDP workers with human-like input.
+- **CDP human input on parallel path:** Click/Type/Navigate via chromekit Mouse/Keyboard (bezier cursor glide, TypeHuman 80–220ms/char, ClearInput) for anti-bot safety without native OS integration.
+- **TypeAction.ClearFirst bool field:** Optional value-clearing via Ctrl+A→Delete before typing, on both native and CDP paths.
+- **Configurable drift retry:** New Options: `WithDriftRetries(n)` (default 3), `WithDriftRetryDelay(d)` (default 250ms). Total attempts = 1 + driftRetries.
+
+### Changed
+- **Example consolidation:** Removed hotkey_demo, stress_nine, two_browser, nine_navigate, pause_resume_demo, stress_omnibox_click, pid_smoke, omnibox_smoke. Kept five_browser_steps (regression test for Native flag + ClearFirst) and testpage (shared fixture).
+- **chromekit upgrade:** v0.2.0 → v0.6.1 (human input implementations).
+- **Fleet public API (signatures):**
+  - `Submit` now returns `(<-chan JobResult, error)` (was `chan JobResult`).
+  - `Pause`/`Resume` take `reason string` arg (was no-arg).
+  - `Start`/`Stop` return nothing (was `error`).
+- **No public AbortAll():** Replaced by Fleet.Stop() and optional Ctrl+Alt+Shift+S hotkey (disabled by default). Use Fleet.Pause(reason) / Fleet.Resume(reason) for graceful control.
+- **Hotkey defaults:** Stop hotkey disabled by default (opt-in via WithStopHotkey). Pause (Ctrl+F10) and Resume (Ctrl+F11) enabled by default.
+- **Navigate routing:** No longer always parallel; native-critical when handle.Native=true.
+- **BrowserHandle.validate():** Now enforces handle.Native matches Browser.InputBackend().
+
+### Fixed
+- Cursor drift retry now respects context cancellation (previously could ignore ctx.Done()).
+
+### Known Limitations
+- Test coverage still <10%; critical sections untested.
+- Windows-only native path; non-Windows use CDP (detectable by anti-bot).
+- Global hotkey listener: Windows-only.
+
+### Dependencies
+- github.com/tuwibu/chromekit v0.6.1 (published version, no replace directive).
+- Transitive: chromedp/cdproto v0.0.0-20260427, chromedp/chromedp v0.15.1, etc.
+
+### Breaking Changes
+- Fleet.Submit signature: returns error as second value (callers must handle).
+- Fleet.Pause/Resume now require reason string arg.
+- No public AbortAll(); use Fleet.Stop() instead.
+- BrowserHandle must include Native field on construction.
+
+---
+
 ## [v0.2.0] — 2026-05-10
 
 ### Added

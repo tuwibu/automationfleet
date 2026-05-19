@@ -1,28 +1,48 @@
 # chromefleet
 
-Orchestrator on top of [chromekit](../chromekit) for driving N Chrome instances with native input (mouse + keyboard) under a serialized queue.
+Orchestrator on top of [chromekit](https://github.com/tuwibu/chromekit) (v0.6.1) for driving N Chrome instances with dual-path routing: native input (mouse + keyboard) under a serialized critical section, or parallel human-like CDP actions (bezier cursor, TypeHuman, ClearInput) per per-handle `Native` flag.
 
-**Why a separate repo?** chromekit is a per-browser library. Multi-browser scheduling — priority queue, focus arbitration, hotkey abort — is a different concern. Keeping them split lets chromekit stay small and chromefleet evolve independently.
+**Why a separate repo?** chromekit is a per-browser library. Multi-browser scheduling — priority queue, per-handle routing, focus arbitration, hotkey controls — is a different concern. Keeping them split lets chromekit stay small and chromefleet evolve independently.
 
 ## Architecture
 
 ```
-┌────────────────┐    Submit(Job)    ┌──────────────────────┐
-│  Your code     │──────────────────▶│  Fleet               │
-└────────────────┘                   │   ├─ priorityQueue    │
-                                     │   ├─ 1× nativeWorker  │── critical section ──▶ chromekit.Browser
-                                     │   ├─ N× cdpWorkers    │── parallel ─────────▶ chromekit.Page
-                                     │   └─ hotkeyListener   │── Ctrl+Alt+Shift+S ─▶ AbortAll
-                                     └──────────────────────┘
+┌────────────────┐    Submit(Job)    ┌──────────────────────────────┐
+│  Your code     │──────────────────▶│  Fleet                       │
+└────────────────┘                   │   ├─ priorityQueue           │
+                                     │   ├─ nativeWorker (if any)   │
+                                     │   ├─ cdpWorkers pool (if any)│
+                                     │   └─ hotkeyListener          │
+                                     │      (Pause/Resume enabled   │
+                                     │       by default; Stop opt-in)
+                                     └──────────────────────────────┘
+                    ▲                 ▼
+              Per-handle Native flag determines routing:
+              
+  Native=true (native critical section):      Native=false (parallel CDP):
+  ├─ 1× nativeWorker (serial)                 ├─ N× cdpWorkers (parallel)
+  ├─ Focus, scroll, bbox, drift-guard        ├─ Mouse.Click (bezier glide)
+  ├─ Click / Type / Navigate                  ├─ Mouse.FocusElement
+  ├─ Retry on drift (default 3)               ├─ Keyboard.ClearInput (optional)
+  └─ IME guard (Windows)                      └─ Keyboard.TypeHuman
+                                                 (80–220ms/char, anti-bot safe)
 ```
 
-**Atomic critical section** (single native worker, fleet-wide):
+**Native critical section** (single worker, one NativeHandle at a time):
 
 ```
 Browser.Focus → page.ScrollIntoView → page.BoundingBox → MouseMove → drift-guard → Click [+ IME-guard → Type]
 ```
 
 Cannot be split — typing without a focused target risks keystrokes leaking into other windows.
+
+**CDP parallel path** (multiple browsers concurrently):
+
+```
+Mouse.Click (bezier glide) + FocusElement + optional ClearInput + TypeHuman (human-like 80–220ms/char, 5% typo)
+```
+
+Each browser runs independently on a CDP worker; human-like behavior avoids bot detection.
 
 ## Quick start
 
@@ -37,7 +57,9 @@ defer fleet.Stop()
 b1, _ := chromekit.Connect(9222,
     chromekit.WithInputBackend(chromekit.BackendNative),
     chromekit.WithNativeWindow(0, 0, 1.0))
-fleet.Register(&chromefleet.BrowserHandle{ID: "b1", Browser: b1, X: 0, Y: 0, Scale: 1.0})
+fleet.Register(&chromefleet.BrowserHandle{
+    ID: "b1", Browser: b1, X: 0, Y: 0, Scale: 1.0, Native: true,
+})
 
 ch, _ := fleet.Submit(chromefleet.Job{
     BrowserID: "b1",
@@ -47,26 +69,26 @@ ch, _ := fleet.Submit(chromefleet.Job{
 result := <-ch
 ```
 
-## Hotkey abort
+## Hotkey controls
 
-Default `Ctrl+Alt+Shift+S` cancels every in-flight + pending job. Customize:
+**Pause (Ctrl+F10) and Resume (Ctrl+F11):** Enabled by default. Pause gracefully blocks after the current job completes; Resume unblocks immediately.
+
+**Stop (Ctrl+Alt+Shift+S):** DISABLED by default (opt-in via `WithStopHotkey`). Destructive — no resume after stop.
+
+Customize stop hotkey:
 
 ```go
 hk, _ := chromefleet.ParseHotkey("Ctrl+Shift+Q")
 fleet := chromefleet.New(chromefleet.WithStopHotkey(hk))
 ```
 
-Disable entirely: `chromefleet.WithStopHotkeyDisabled()`.
+Or programmatically: `fleet.Pause("reason")` / `fleet.Resume("reason")` / `fleet.Stop()`.
 
-## Development
+## Dependencies
 
-This repo uses a `replace` directive pointing to `../chromekit`:
+- `github.com/tuwibu/chromekit` v0.6.1 — per-browser library for native input + CDP fallback
 
-```
-replace github.com/tuwibu/chromekit => ../chromekit
-```
-
-Remove before publishing.
+<!-- stale: verify whether published version or local development. go.mod shows v0.6.1 require; no replace directive seen. -->
 
 ## Status
 

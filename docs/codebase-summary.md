@@ -1,9 +1,9 @@
 # Codebase Summary
 
 **Root package:** `chromefleet`  
-**Total root .go files:** 11 (1521 LOC)  
+**Total root .go files:** 12 (1656 LOC)  
 **Internal packages:** `internal/winapi` (3 files)  
-**Examples:** 9 programs  
+**Examples:** 2 programs (consolidated from 9)  
 **Go version:** 1.26.2
 
 ## Root Package Structure
@@ -12,12 +12,12 @@
 
 | File | LOC | Purpose |
 |------|-----|---------|
-| **fleet.go** | 363 | Fleet orchestrator; New, Register, Start, Stop, Pause, Resume, Submit, Wait. Config builder (Option pattern with defaults). |
-| **dispatcher.go** | 272 | Worker loop: priority queue checkout, native/CDP routing, critical section orchestration, pause/resume cond. |
-| **action.go** | 112 | Action interface (kind, validate); ClickAction, TypeAction, NavigateAction enum-like dispatch. |
+| **fleet.go** | 391 | Fleet orchestrator; New, Register, Start, Stop, Pause, Resume, Submit, Wait. Config builder (Option pattern with defaults). WithDriftRetries / WithDriftRetryDelay for retry tuning. |
+| **dispatcher.go** | 314 | Worker loop: priority queue checkout, per-handle Native routing (native worker vs CDP pool), critical section orchestration, pause/resume cond. Human input on CDP path (Mouse.Click bezier, Mouse.FocusElement, Keyboard.ClearInput, Keyboard.TypeHuman). Drift retry loop (executeCriticalWithRetry). |
+| **action.go** | 117 | Action interface (kind, validate); ClickAction, TypeAction (with ClearFirst bool), NavigateAction. needsNativeCriticalSection detector for routing. |
 | **hotkey.go** | 150 | Hotkey struct (Mods, Key), ParseHotkey string parsing, listener lifecycle. Modifier + Key constants (KeyA–Z, KeyF1–F12). |
 | **job.go** | 75 | JobID, JobStatus enum (Done/Failed/Cancelled/Rejected), Job input, JobResult output. |
-| **browser_handle.go** | 34 | BrowserHandle struct (ID, Browser ptr, X, Y, Scale) + validation. Fleet-stable browser binding. |
+| **browser_handle.go** | 47 | BrowserHandle struct (ID, Browser ptr, X, Y, Scale, Native bool) + validation. Per-handle Native flag gates native-critical routing vs parallel CDP path. validate() enforces handle.Native matches Browser.InputBackend(). |
 
 ### Platform Abstraction
 
@@ -54,8 +54,8 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 
 **Fleet** — Orchestrator  
 - Lifecycle: `New(opts ...Option) *Fleet`, `Start()`, `Stop()`, `Wait()`.
-- Work: `Register(handle *BrowserHandle)`, `Submit(job Job) chan JobResult`, `AbortAll()`.
-- Control: `Pause()`, `Resume()`.
+- Work: `Register(handle *BrowserHandle) error`, `Submit(job Job) (<-chan JobResult, error)`.
+- Control: `Pause(reason string)`, `Resume(reason string)`.
 
 **Job** — Work unit  
 - Input: `BrowserID string`, `Action`, `Priority int`, `Timeout time.Duration`.
@@ -68,11 +68,13 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 
 **Action** — Interface (kind, validate)  
 - `ClickAction{Selector, Button}`.
-- `TypeAction{Selector, Text}` — requires Selector (no cross-window typing).
-- `NavigateAction{URL}` — omnibox-driven.
+- `TypeAction{Selector, Text, ClearFirst bool}` — requires Selector (no cross-window typing). ClearFirst=true wipes existing value via Ctrl+A→Delete before typing.
+- `NavigateAction{URL, Timeout}` — native-critical when handle.Native; parallel CDP fallback when handle.Native=false.
 
 **BrowserHandle** — Fleet-stable browser binding  
-- `ID string`, `Browser *chromekit.Browser`, `X, Y int`, `Scale float64`.
+- `ID string`, `Browser *chromekit.Browser`, `X, Y int`, `Scale float64`, `Native bool`.
+- `Native=true`: Browser MUST be launched with `chromekit.WithInputBackend(BackendNative)` + `WithNativeWindow(X, Y, Scale)` matching struct fields. Click/Type/Navigate route through native worker with cursor drift checks.
+- `Native=false` (default): actions run on parallel CDP pool; X/Y/Scale ignored. Click/Type/Navigate execute via human Mouse/Keyboard (bezier glide, TypeHuman, ClearInput) — anti-bot safe but no drift guard.
 
 **Hotkey** — Key combo  
 - `Mods Modifier` (bitmask: ModCtrl, ModAlt, ModShift, ModWin).
@@ -103,6 +105,8 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 - `OnPause(func(reason string)) Option`
 - `OnResume(func(reason string)) Option`
 - `WithDriftThresholdPx(int) Option`
+- `WithDriftRetries(int) Option` — max retries on cursor drift (default 3). Total attempts = 1 + driftRetries.
+- `WithDriftRetryDelay(time.Duration) Option` — sleep between drift retry attempts (default 250ms).
 
 ### Errors
 
@@ -113,15 +117,10 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 
 | Subdirectory | Purpose | Key features |
 |---|---|---|
-| **hotkey_demo** | Submit N jobs; user presses Ctrl+Alt+Shift+S to abort. Verifies in-flight finishes critical section, pending get StatusCancelled. | Hotkey abort, job lifecycle tracking. |
-| **stress_nine** | Launch ≤9 Chrome instances (3×3 grid); N random jobs per browser. Print p50/p95/p99 latency + error counts. | Parallel job submission, latency profiling, stress tolerance. |
-| **two_browser** | 2 Chrome side-by-side; 20 alternating click+type jobs. Verify no cross-window input leak. | Event log isolation, input safety. |
-| **nine_navigate** | Navigate 9 browsers concurrently via omnibox (e.g., google.com, github.com). | NavigateAction, multi-browser scheduling. |
-| **pause_resume_demo** | Hotkey pause (Ctrl+F10) / resume (Ctrl+F11) flow demonstration. | Pause/resume semantics, conditional blocking. |
-| **stress_omnibox_click** | Repeated omnibox navigation + clicks under load. | Stress tolerance, navigation stability. |
-| **pid_smoke** | Smoke test involving PID handling (purpose from code inspection). | PID lifecycle, resource cleanup. |
-| **omnibox_smoke** | Light omnibox navigation smoke test. | Quick sanity check. |
-| **testpage** | Shared test server (HTML form page) for input tests. | Test fixture, local dev server. |
+| **five_browser_steps** | Launch 5 Chrome instances in parallel; regex field + TypeAction.ClearFirst test + native vs CDP routing validation. Regression test for dual-path (Native flag). | Parallel browser setup, per-handle Native flag, ClearFirst field. |
+| **testpage** | Shared HTML test server (form fixture). Run before integration tests to serve localhost:8080/testpage. | Test fixture, local dev server. |
+
+*Archived (deleted): hotkey_demo, stress_nine, two_browser, nine_navigate, pause_resume_demo, stress_omnibox_click, pid_smoke, omnibox_smoke — consolidation to core regression test suite.*
 
 ## Entry Points
 
@@ -133,7 +132,7 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 ## Dependencies
 
 **Direct:**
-- `github.com/tuwibu/chromekit` v0.2.0 (local `replace ../chromekit`)
+- `github.com/tuwibu/chromekit` v0.6.1
 
 **Indirect (transitive from chromekit):**
 - chromedp/cdproto (Chrome DevTools Protocol)
@@ -145,22 +144,27 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 
 ## Critical Paths
 
-### 1. Submit → Execute (Happy Path)
+### 1. Submit → Execute (Happy Path with Per-Handle Native Routing)
 ```
 Fleet.Submit(Job)
   → Dispatcher.enqueue(Job)
     → Validate Job.BrowserID, Action
     → Insert into priorityQueue heap
-    → Wake native worker (cond.Signal)
+    → Wake dispatcher (cond.Signal)
   ← resCh = make(chan JobResult, 1)
 
-Dispatcher.nativeWorker() loop
+Dispatcher.nativeWorker() loop (executes critical-section actions)
   ← Next job from queue (highest priority, FIFO on tie)
   → Determine action type (click, type, navigate)
-  → Type-switch to handler
-    - ClickAction: Browser.Focus → ScrollIntoView → BoundingBox → MouseMove → drift-guard → Click
-    - TypeAction: same + IME-guard → Type
-    - NavigateAction: CDP omnibox input (parallel, no critical section)
+  → If needsNativeCriticalSection(action) && handle.Native:
+    - ClickAction: Browser.Focus → ScrollIntoView → BoundingBox → MouseMove → drift-guard → executeCriticalWithRetry (retry up to 1+driftRetries on errCursorDrift)
+    - TypeAction: same as Click, then Mouse.FocusElement → optional ClearInput (if ClearFirst=true) → TypeHuman (80–220ms/char)
+    - NavigateAction: native omnibox input (Ctrl+L → Ctrl+A → type URL → Enter)
+  → Else if handle.Native=false (default):
+    - Route to cdpWorkers pool (parallel, human Mouse/Keyboard via chromekit)
+    - Mouse.Click(sel) with bezier glide (anti-bot safe)
+    - FocusElement(sel) → optional ClearInput → TypeHuman(text)
+    - Navigate(url, timeout)
   → resCh ← JobResult{Status: Done, Took: duration}
   ← resCh closes when main sends
 ```
@@ -182,13 +186,17 @@ User presses Ctrl+F11 (resume hotkey)
     → Next queue checkout proceeds normally
 ```
 
-### 3. Hotkey Abort (Destructive)
+### 3. Stop (Hotkey or Programmatic)
 ```
-User presses Ctrl+Alt+Shift+S (stop hotkey, enabled via WithStopHotkey)
-  → Dispatcher.AbortAll()
+User presses Ctrl+Alt+Shift+S (stop hotkey, if enabled via WithStopHotkey)
+  OR Fleet.Stop() called programmatically
+  → Fleet.requestStop (internal)
     → In-flight job: run to critical-section boundary, finish cleanly
     → Pending jobs in queue: drop, deliver StatusCancelled
+    → Dispatcher loop exits, workers clean up
     → No resume after stop (destructive)
+
+Note: Stop hotkey is DISABLED by default. Pause (Ctrl+F10) and Resume (Ctrl+F11) are enabled by default.
 ```
 
 ## Test Coverage
@@ -229,14 +237,7 @@ chromefleet/
 │       ├── keyboard_layout_windows.go    # IME guard
 │       └── stubs_other.go                # Cross-platform stubs
 ├── examples/
-│   ├── hotkey_demo/
-│   ├── stress_nine/
-│   ├── two_browser/
-│   ├── nine_navigate/
-│   ├── pause_resume_demo/
-│   ├── stress_omnibox_click/
-│   ├── pid_smoke/
-│   ├── omnibox_smoke/
+│   ├── five_browser_steps/
 │   └── testpage/
 ├── go.mod
 ├── go.sum
@@ -247,7 +248,7 @@ chromefleet/
 
 1. **Import:** `import "github.com/tuwibu/chromefleet"`
 2. **Create Fleet:** `f := chromefleet.New(opts...)`
-3. **Register browsers:** `f.Register(&BrowserHandle{ID: "b1", Browser: b1, X: 0, Y: 0, Scale: 1.0})`
+3. **Register browsers:** `f.Register(&BrowserHandle{ID: "b1", Browser: b1, X: 0, Y: 0, Scale: 1.0, Native: true})` (set Native=true if browser is launched with BackendNative; false otherwise)
 4. **Start:** `f.Start()`
 5. **Submit jobs:** `resCh := f.Submit(Job{BrowserID: "b1", Action: ClickAction{...}, Priority: 5})`
 6. **Wait:** `result := <-resCh` (StatusDone, StatusFailed, StatusCancelled, StatusRejected)
