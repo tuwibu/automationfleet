@@ -32,7 +32,8 @@ type Dispatcher struct {
 }
 
 // errCursorDrift signals the OS cursor moved during a critical section, most
-// likely because a human grabbed the mouse mid-job. Retried once.
+// likely because a human grabbed the mouse mid-job. Retried up to
+// cfg.driftRetries times with cfg.driftRetryDelay between attempts.
 var errCursorDrift = errors.New("chromefleet: cursor drift detected")
 
 func newDispatcher(f *Fleet) *Dispatcher {
@@ -219,12 +220,19 @@ func (d *Dispatcher) runJob(qj *queuedJob, native bool) {
 	d.completeJob(qj, JobResult{Status: status, Err: err, Took: took})
 }
 
-// executeCriticalWithRetry retries once on cursor drift; any other error
-// surfaces immediately.
+// executeCriticalWithRetry retries up to cfg.driftRetries times on cursor
+// drift, sleeping cfg.driftRetryDelay between attempts to let a human nudging
+// the mouse settle. Non-drift errors surface immediately. Total attempts =
+// 1 (initial) + driftRetries.
 func (d *Dispatcher) executeCriticalWithRetry(ctx context.Context, h *BrowserHandle, a Action) error {
 	err := executeCritical(ctx, d.fleet, h, a)
-	if errors.Is(err, errCursorDrift) {
-		d.fleet.log.Warnf("chromefleet: cursor drift on browser=%s action=%s — retry", h.ID, a.kind())
+	for attempt := 1; attempt <= d.fleet.cfg.driftRetries && errors.Is(err, errCursorDrift); attempt++ {
+		d.fleet.log.Warnf("chromefleet: cursor drift on browser=%s action=%s — retry %d/%d", h.ID, a.kind(), attempt, d.fleet.cfg.driftRetries)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d.fleet.cfg.driftRetryDelay):
+		}
 		err = executeCritical(ctx, d.fleet, h, a)
 	}
 	return err

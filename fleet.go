@@ -47,6 +47,12 @@ type config struct {
 	onResume      func(reason string)
 
 	driftThreshold int
+
+	// driftRetries: số lần retry trên errCursorDrift (initial attempt KHÔNG
+	// tính). Default 3 cho phép user nudge chuột vài lần mà không fall back.
+	// driftRetryDelay: chờ giữa các attempt để cursor settle.
+	driftRetries    int
+	driftRetryDelay time.Duration
 }
 
 // DefaultPauseHotkey is Ctrl+F10. F-keys + Ctrl rarely conflict with global
@@ -70,7 +76,9 @@ func defaultConfig() *config {
 		resumeHotkey:  DefaultResumeHotkey,
 		resumeEnabled: true,
 
-		driftThreshold: 5,
+		driftThreshold:  5,
+		driftRetries:    3,
+		driftRetryDelay: 250 * time.Millisecond,
 	}
 }
 
@@ -164,6 +172,26 @@ func WithDriftThresholdPx(px int) Option {
 	return func(c *config) {
 		if px > 0 {
 			c.driftThreshold = px
+		}
+	}
+}
+
+// WithDriftRetries sets max retries on cursor drift (default 3). Initial
+// attempt KHÔNG tính — total = 1 + n. Set 0 để disable retry (legacy single-shot).
+func WithDriftRetries(n int) Option {
+	return func(c *config) {
+		if n >= 0 {
+			c.driftRetries = n
+		}
+	}
+}
+
+// WithDriftRetryDelay set thời gian chờ giữa 2 attempt drift retry (default
+// 250ms). Cho cursor settle khi user đang nudge.
+func WithDriftRetryDelay(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.driftRetryDelay = d
 		}
 	}
 }
