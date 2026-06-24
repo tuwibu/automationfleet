@@ -1,4 +1,4 @@
-package chromefleet
+package automationfleet
 
 import (
 	"fmt"

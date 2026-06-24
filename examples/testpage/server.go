@@ -1,5 +1,5 @@
 // Package testpage spins up an HTTP server serving an instrumented form
-// page used by the chromefleet examples.
+// page used by the automationfleet examples.
 package testpage
 
 import (

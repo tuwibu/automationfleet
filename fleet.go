@@ -1,13 +1,16 @@
-package chromefleet
+package automationfleet
 
 import (
 	"context"
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/tuwibu/chromekit"
+	"github.com/tuwibu/firefoxkit"
 )
 
-// Logger is what chromefleet writes diagnostic lines to. Wire your own (zap,
+// Logger is what automationfleet writes diagnostic lines to. Wire your own (zap,
 // zerolog, log/slog) or use NoopLogger. Keep it allocation-light — the
 // dispatcher logs once per job.
 type Logger interface {
@@ -240,9 +243,51 @@ func (f *Fleet) Register(h *BrowserHandle) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, exists := f.handles[h.ID]; exists {
-		return errors.New("chromefleet: browser id already registered: " + h.ID)
+		return errors.New("automationfleet: browser id already registered: " + h.ID)
 	}
 	f.handles[h.ID] = h
+	return nil
+}
+
+// RegisterChrome wraps a chromekit.Browser in a Driver and registers it under
+// id. native must match how the browser was launched (BackendNative vs CDP);
+// x/y/scale are the native window origin + DPI scale used by the drift guard
+// (ignored when native is false).
+func (f *Fleet) RegisterChrome(id string, b *chromekit.Browser, native bool, x, y int, scale float64) error {
+	if b == nil {
+		return errors.New("automationfleet: RegisterChrome: browser is nil")
+	}
+	return f.Register(&BrowserHandle{
+		ID: id, Driver: WrapChrome(b), Native: native, X: x, Y: y, Scale: scale,
+	})
+}
+
+// RegisterFirefox wraps a firefoxkit.Browser in a Driver and registers it under
+// id. Prefer native=false (BiDi/Remote) — native firefox input has a
+// content-offset gap in firefoxkit (see WrapFirefox). x/y/scale are the native
+// window origin + DPI scale used by the drift guard (ignored when native is false).
+func (f *Fleet) RegisterFirefox(id string, b *firefoxkit.Browser, native bool, x, y int, scale float64) error {
+	if b == nil {
+		return errors.New("automationfleet: RegisterFirefox: browser is nil")
+	}
+	return f.Register(&BrowserHandle{
+		ID: id, Driver: WrapFirefox(b), Native: native, X: x, Y: y, Scale: scale,
+	})
+}
+
+// Unregister removes a browser handle from the fleet. Returns ErrUnknownBrowser
+// if the ID was never registered. Pending jobs targeting this BrowserID will
+// fail with ErrUnknownBrowser when dispatched (dispatcher checks handle nil
+// before executing). Symmetric to Register — required so callers can re-Register
+// the same ID after the underlying Browser closes; without it the internal
+// registry holds a stale handle forever and the next Register rejects.
+func (f *Fleet) Unregister(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.handles[id]; !exists {
+		return ErrUnknownBrowser
+	}
+	delete(f.handles, id)
 	return nil
 }
 
@@ -277,7 +322,7 @@ func (f *Fleet) Start() {
 	go func() {
 		defer close(f.hotkeyDone)
 		if err := runHotkeyMultiListener(f.ctx, bindings); err != nil {
-			f.log.Warnf("chromefleet: hotkey listener: %v", err)
+			f.log.Warnf("automationfleet: hotkey listener: %v", err)
 		}
 	}()
 }
@@ -286,12 +331,12 @@ func (f *Fleet) Start() {
 // to completion. Idempotent — calling twice fires OnPause once.
 func (f *Fleet) Pause(reason string) {
 	if f.dispatcher.pause() {
-		f.log.Infof("chromefleet: pause requested (%s)", reason)
+		f.log.Infof("automationfleet: pause requested (%s)", reason)
 		if f.cfg.onPause != nil {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						f.log.Errorf("chromefleet: OnPause panic: %v", r)
+						f.log.Errorf("automationfleet: OnPause panic: %v", r)
 					}
 				}()
 				f.cfg.onPause(reason)
@@ -304,12 +349,12 @@ func (f *Fleet) Pause(reason string) {
 // OnResume only when transitioning from paused to running.
 func (f *Fleet) Resume(reason string) {
 	if f.dispatcher.resume() {
-		f.log.Infof("chromefleet: resume requested (%s)", reason)
+		f.log.Infof("automationfleet: resume requested (%s)", reason)
 		if f.cfg.onResume != nil {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						f.log.Errorf("chromefleet: OnResume panic: %v", r)
+						f.log.Errorf("automationfleet: OnResume panic: %v", r)
 					}
 				}()
 				f.cfg.onResume(reason)
@@ -323,7 +368,7 @@ func (f *Fleet) Resume(reason string) {
 // after the result lands.
 func (f *Fleet) Submit(j Job) (<-chan JobResult, error) {
 	if j.Action == nil {
-		return nil, errors.New("chromefleet: Job.Action required")
+		return nil, errors.New("automationfleet: Job.Action required")
 	}
 	if err := j.Action.validate(); err != nil {
 		return nil, err
@@ -364,7 +409,7 @@ func (f *Fleet) Wait() {
 // Idempotent via stopOnce — safe to call from hotkey, Stop, or AbortAll.
 func (f *Fleet) requestStop(reason string) {
 	f.stopOnce.Do(func() {
-		f.log.Infof("chromefleet: stop requested (%s)", reason)
+		f.log.Infof("automationfleet: stop requested (%s)", reason)
 		f.mu.Lock()
 		f.stopped = true
 		f.mu.Unlock()
@@ -372,7 +417,7 @@ func (f *Fleet) requestStop(reason string) {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						f.log.Errorf("chromefleet: OnStop panic: %v", r)
+						f.log.Errorf("automationfleet: OnStop panic: %v", r)
 					}
 				}()
 				f.cfg.onStop(reason)

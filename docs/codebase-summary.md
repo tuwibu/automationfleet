@@ -1,6 +1,6 @@
 # Codebase Summary
 
-**Root package:** `chromefleet`  
+**Root package:** `automationfleet`  
 **Total root .go files:** 12 (1656 LOC)  
 **Internal packages:** `internal/winapi` (3 files)  
 **Examples:** 2 programs (consolidated from 9)  
@@ -17,7 +17,9 @@
 | **action.go** | 117 | Action interface (kind, validate); ClickAction, TypeAction (with ClearFirst bool), NavigateAction. needsNativeCriticalSection detector for routing. |
 | **hotkey.go** | 150 | Hotkey struct (Mods, Key), ParseHotkey string parsing, listener lifecycle. Modifier + Key constants (KeyA–Z, KeyF1–F12). |
 | **job.go** | 75 | JobID, JobStatus enum (Done/Failed/Cancelled/Rejected), Job input, JobResult output. |
-| **browser_handle.go** | 47 | BrowserHandle struct (ID, Browser ptr, X, Y, Scale, Native bool) + validation. Per-handle Native flag gates native-critical routing vs parallel CDP path. validate() enforces handle.Native matches Browser.InputBackend(). |
+| **browser_handle.go** | 47 | BrowserHandle struct (ID, Driver, X, Y, Scale, Native bool) + validation. Per-handle Native flag gates native-critical routing vs parallel Remote path. validate() requires non-nil Driver and enforces handle.Native matches Driver.InputBackend(). |
+| **driver.go** | — | Driver/Page/Mouse/Keyboard interfaces + Backend enum + BoundingBox. Kit-agnostic abstraction the dispatcher drives. |
+| **adapter_chromekit.go / adapter_firefoxkit.go** | — | WrapChrome / WrapFirefox adapters bridging each kit to the Driver interface. Only files importing the kits (plus fleet.go register helpers). |
 
 ### Platform Abstraction
 
@@ -72,9 +74,15 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 - `NavigateAction{URL, Timeout}` — native-critical when handle.Native; parallel CDP fallback when handle.Native=false.
 
 **BrowserHandle** — Fleet-stable browser binding  
-- `ID string`, `Browser *chromekit.Browser`, `X, Y int`, `Scale float64`, `Native bool`.
-- `Native=true`: Browser MUST be launched with `chromekit.WithInputBackend(BackendNative)` + `WithNativeWindow(X, Y, Scale)` matching struct fields. Click/Type/Navigate route through native worker with cursor drift checks.
-- `Native=false` (default): actions run on parallel CDP pool; X/Y/Scale ignored. Click/Type/Navigate execute via human Mouse/Keyboard (bezier glide, TypeHuman, ClearInput) — anti-bot safe but no drift guard.
+- `ID string`, `Driver Driver`, `X, Y int`, `Scale float64`, `Native bool`.
+- `Driver` is the kit-agnostic interface (chromekit/firefoxkit wrapped via `WrapChrome`/`WrapFirefox`). Prefer the typed helpers `Fleet.RegisterChrome` / `Fleet.RegisterFirefox` over building the struct directly.
+- `Native=true`: browser MUST be launched with the native backend + native window matching struct fields. Click/Type/Navigate route through native worker with cursor drift checks.
+- `Native=false` (default): actions run on the parallel Remote pool (CDP for chrome, BiDi for firefox); X/Y/Scale ignored. Click/Type/Navigate execute via human Mouse/Keyboard (bezier glide, TypeHuman, ClearInput) — anti-bot safe but no drift guard.
+
+**Driver / Page / Mouse / Keyboard** — kit abstraction (driver.go)  
+- `Driver`: `Current() Page`, `Focus(ctx)`, `InputBackend() Backend`, `ContentOffset()`.
+- `Backend`: fleet-internal enum `BackendNative` / `BackendRemote` (adapters map kit backends by name, never by raw int).
+- Adapters: `WrapChrome(*chromekit.Browser)`, `WrapFirefox(*firefoxkit.Browser)`.
 
 **Hotkey** — Key combo  
 - `Mods Modifier` (bitmask: ModCtrl, ModAlt, ModShift, ModWin).
@@ -132,7 +140,8 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 ## Dependencies
 
 **Direct:**
-- `github.com/tuwibu/chromekit` v0.6.1
+- `github.com/tuwibu/chromekit` v0.6.1 (Chrome driver)
+- `github.com/tuwibu/firefoxkit` (Firefox driver; unpublished, `replace => ../firefoxkit`, monorepo-internal)
 
 **Indirect (transitive from chromekit):**
 - chromedp/cdproto (Chrome DevTools Protocol)
@@ -219,7 +228,7 @@ Note: Stop hotkey is DISABLED by default. Pause (Ctrl+F10) and Resume (Ctrl+F11)
 ## File Organization
 
 ```
-chromefleet/
+automationfleet/
 ├── fleet.go                              # Orchestrator + Options
 ├── dispatcher.go                         # Worker loop + queue checkout
 ├── dispatcher_queue.go                   # Priority heap impl
@@ -246,9 +255,9 @@ chromefleet/
 
 ## How to Use (Quick Reference)
 
-1. **Import:** `import "github.com/tuwibu/chromefleet"`
-2. **Create Fleet:** `f := chromefleet.New(opts...)`
-3. **Register browsers:** `f.Register(&BrowserHandle{ID: "b1", Browser: b1, X: 0, Y: 0, Scale: 1.0, Native: true})` (set Native=true if browser is launched with BackendNative; false otherwise)
+1. **Import:** `import "github.com/tuwibu/automationfleet"`
+2. **Create Fleet:** `f := automationfleet.New(opts...)`
+3. **Register browsers:** `f.RegisterChrome("b1", b1, true, 0, 0, 1.0)` (id, browser, native, x, y, scale — set native=true if browser launched with BackendNative; firefox via `f.RegisterFirefox(...)`)
 4. **Start:** `f.Start()`
 5. **Submit jobs:** `resCh := f.Submit(Job{BrowserID: "b1", Action: ClickAction{...}, Priority: 5})`
 6. **Wait:** `result := <-resCh` (StatusDone, StatusFailed, StatusCancelled, StatusRejected)

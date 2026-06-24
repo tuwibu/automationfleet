@@ -1,6 +1,6 @@
 //go:build !windows
 
-package chromefleet
+package automationfleet
 
 import (
 	"context"
@@ -16,10 +16,10 @@ var warnCDPFallbackOnce sync.Once
 // requires Windows.
 func executeCritical(_ context.Context, f *Fleet, h *BrowserHandle, a Action) error {
 	warnCDPFallbackOnce.Do(func() {
-		f.log.Warnf("chromefleet: native critical section unavailable — falling back to CDP input (no anti-bot guarantees)")
+		f.log.Warnf("automationfleet: native critical section unavailable — falling back to CDP input (no anti-bot guarantees)")
 	})
 
-	page := h.Browser.Current()
+	page := h.Driver.Current()
 	if page == nil {
 		return fmt.Errorf("no active page on browser %s", h.ID)
 	}

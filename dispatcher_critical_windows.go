@@ -1,6 +1,6 @@
 //go:build windows
 
-package chromefleet
+package automationfleet
 
 import (
 	"context"
@@ -8,8 +8,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/tuwibu/chromekit"
-	"github.com/tuwibu/chromefleet/internal/winapi"
+	"github.com/tuwibu/automationfleet/internal/winapi"
 )
 
 // executeCritical runs the atomic native sequence for a single job:
@@ -25,11 +24,11 @@ func executeCritical(ctx context.Context, f *Fleet, h *BrowserHandle, a Action) 
 		return err
 	}
 
-	if err := h.Browser.Focus(ctx); err != nil {
+	if err := h.Driver.Focus(ctx); err != nil {
 		return fmt.Errorf("focus: %w", err)
 	}
 
-	page := h.Browser.Current()
+	page := h.Driver.Current()
 	if page == nil {
 		return fmt.Errorf("no active page on browser %s", h.ID)
 	}
@@ -47,14 +46,20 @@ func executeCritical(ctx context.Context, f *Fleet, h *BrowserHandle, a Action) 
 		return page.Navigate(act.URL, timeout)
 
 	case ClickAction:
-		x, y, err := scrollAndQueryCenter(ctx, page, act.Selector)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		x, y, err := page.ElementCenter(act.Selector)
 		if err != nil {
 			return err
 		}
 		return clickAt(ctx, f, h, page, x, y)
 
 	case TypeAction:
-		x, y, err := scrollAndQueryCenter(ctx, page, act.Selector)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		x, y, err := page.ElementCenter(act.Selector)
 		if err != nil {
 			return err
 		}
@@ -66,7 +71,7 @@ func executeCritical(ctx context.Context, f *Fleet, h *BrowserHandle, a Action) 
 
 		prevLayout, layoutErr := winapi.ForceENUSLayout()
 		if layoutErr != nil {
-			f.log.Warnf("chromefleet: layout switch failed: %v (typing anyway)", layoutErr)
+			f.log.Warnf("automationfleet: layout switch failed: %v (typing anyway)", layoutErr)
 		}
 		defer winapi.RestoreLayout(prevLayout)
 
@@ -86,45 +91,10 @@ func executeCritical(ctx context.Context, f *Fleet, h *BrowserHandle, a Action) 
 	}
 }
 
-// scrollAndQueryCenter scrolls the element into view, waits for layout to
-// settle, then re-queries the bounding box and returns its center in CSS
-// pixels (viewport-relative). Re-query is essential — the box can move after
-// scrollIntoView if anything is animating or lazy-loading.
-func scrollAndQueryCenter(ctx context.Context, page *chromekit.Page, selector string) (float64, float64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, 0, err
-	}
-	scrollExpr := fmt.Sprintf(
-		`(()=>{const el=document.querySelector(%q); if(!el) return false; el.scrollIntoView({block:'center', inline:'center'}); return true})()`,
-		selector,
-	)
-	var ok bool
-	if err := page.Evaluate(scrollExpr, &ok); err != nil {
-		return 0, 0, fmt.Errorf("scrollIntoView: %w", err)
-	}
-	if !ok {
-		return 0, 0, fmt.Errorf("element %q not found", selector)
-	}
-	time.Sleep(60 * time.Millisecond)
-
-	node, err := page.QuerySelector(selector, 2*time.Second)
-	if err != nil {
-		return 0, 0, err
-	}
-	box, err := page.BoundingBox(node)
-	if err != nil {
-		return 0, 0, err
-	}
-	if box.Width <= 0 || box.Height <= 0 {
-		return 0, 0, fmt.Errorf("zero-size element %q", selector)
-	}
-	return box.Left + box.Width/2, box.Top + box.Height/2, nil
-}
-
 // clickAt drives Page.MoveTo + ClickAt while guarding against cursor drift
 // (a human grabbing the mouse mid-flight). On drift, returns errCursorDrift
 // so the caller's retry path kicks in.
-func clickAt(ctx context.Context, f *Fleet, h *BrowserHandle, page *chromekit.Page, cssX, cssY float64) error {
+func clickAt(ctx context.Context, f *Fleet, h *BrowserHandle, page Page, cssX, cssY float64) error {
 	if err := page.Mouse().MoveTo(cssX, cssY); err != nil {
 		return fmt.Errorf("moveTo: %w", err)
 	}
@@ -134,7 +104,7 @@ func clickAt(ctx context.Context, f *Fleet, h *BrowserHandle, page *chromekit.Pa
 	// chromekit's native backend adds chrome-chrome offset (title bar + tabs
 	// + omnibox) so CSS (0,0) lands on content origin, not window top-left.
 	// Mirror it here so the drift check compares apples to apples.
-	if ox, oy, err := h.Browser.ContentOffset(); err == nil {
+	if ox, oy, err := h.Driver.ContentOffset(); err == nil {
 		expectedX += ox
 		expectedY += oy
 	}

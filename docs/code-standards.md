@@ -15,7 +15,7 @@
   - `browser_handle.go` — browser binding.
 
 ### Packages
-- **Root:** `chromefleet` (orchestrator).
+- **Root:** `automationfleet` (orchestrator).
 - **Internal:** `internal/winapi` (platform-specific Windows API wrappers).
 
 ### Types & Functions
@@ -60,7 +60,7 @@
 var (
     ErrFleetStopped   = errors.New("fleet has stopped; no new jobs accepted")
     ErrUnknownBrowser = errors.New("browser ID not registered with fleet")
-    errCursorDrift    = errors.New("chromefleet: cursor drift detected") // internal, retried once
+    errCursorDrift    = errors.New("automationfleet: cursor drift detected") // internal, retried once
 )
 ```
 
@@ -82,7 +82,7 @@ func (a ClickAction) validate() error {
 
 ## Package Layout
 
-### Root Package (`chromefleet`)
+### Root Package (`automationfleet`)
 **Exported:**
 - Types: `Fleet`, `Job`, `JobResult`, `JobID`, `JobStatus`, `Action`, `ClickAction`, `TypeAction`, `NavigateAction`, `BrowserHandle`, `Hotkey`, `Modifier`, `Key`, `Logger`, `NoopLogger`, `HotkeyBinding`.
 - Functions: `New`, `ParseHotkey`, `NewHotkeyBinding`.

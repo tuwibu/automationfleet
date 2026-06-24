@@ -14,7 +14,7 @@
 - Native input backend via user32.dll (click, type, mouse move).
 - Browser lifecycle (Connect, Close, Focus).
 
-### Phase 02: chromefleet Bootstrap
+### Phase 02: automationfleet Bootstrap
 **Status:** ✅ Done
 
 - Fleet type (orchestrator, lifecycle).
@@ -233,7 +233,7 @@
 2. **Architecture diagrams** (Mermaid, system flow).
 3. **Example programs with walkthroughs.**
 4. **Troubleshooting guide** (common issues, debug techniques).
-5. **Integration guide** (how to wire chromefleet into your project).
+5. **Integration guide** (how to wire automationfleet into your project).
 
 ### Work Items
 - [ ] Write Godoc comments for all exported types/functions.
@@ -301,7 +301,7 @@ Phase 08 ← Documentation (depends on Phase 07 completion)
 ### Release Process (Post-v1.0.0)
 1. Merge all phases into `main`.
 2. Create git tag `v1.0.0`.
-3. Push to GitHub (chromefleet repo, remove `replace` directive in go.mod).
+3. Push to GitHub (automationfleet repo, remove `replace` directive in go.mod).
 4. Publish to pkg.go.dev.
 5. Create release notes summarizing features + breaking changes.
 
@@ -316,7 +316,7 @@ Phase 08 ← Documentation (depends on Phase 07 completion)
 | Documentation | >95% exported symbols documented | Godoc + guides |
 | Zero open bugs | Yes | Tracked in GitHub Issues |
 | Platform support | Windows (full) + macOS/Linux (fallback) | Native on Windows, CDP-only otherwise |
-| Release artifact | chromefleet v1.0.0 on pkg.go.dev | Public GA |
+| Release artifact | automationfleet v1.0.0 on pkg.go.dev | Public GA |
 
 ---
 
@@ -355,7 +355,7 @@ Phase 08 ← Documentation (depends on Phase 07 completion)
 ---
 
 ## Quick Links
-- **Code:** [GitHub chromefleet](https://github.com/tuwibu/chromefleet)
+- **Code:** [GitHub automationfleet](https://github.com/tuwibu/automationfleet)
 - **Dependency:** [chromekit](../chromekit)
 - **Examples:** `examples/` subdirectory
 - **Docs:** `docs/` (you are here)

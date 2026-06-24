@@ -40,8 +40,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tuwibu/chromefleet"
-	"github.com/tuwibu/chromefleet/examples/testpage"
+	"github.com/tuwibu/automationfleet"
+	"github.com/tuwibu/automationfleet/examples/testpage"
 	"github.com/tuwibu/chromekit"
 )
 
@@ -106,10 +106,10 @@ func main() {
 		}
 	}
 
-	fleet := chromefleet.New(
-		chromefleet.WithLogger(stdLogger{}),
-		chromefleet.WithDefaultTimeout(time.Duration(*timeoutSec)*time.Second),
-		chromefleet.WithStopHotkeyDisabled(),
+	fleet := automationfleet.New(
+		automationfleet.WithLogger(stdLogger{}),
+		automationfleet.WithDefaultTimeout(time.Duration(*timeoutSec)*time.Second),
+		automationfleet.WithStopHotkeyDisabled(),
 	)
 	defer fleet.Stop()
 
@@ -134,9 +134,7 @@ func main() {
 			stdlog.Fatalf("seed wait %s: %v", sp.id, err)
 		}
 
-		if err := fleet.Register(&chromefleet.BrowserHandle{
-			ID: sp.id, Browser: b, Native: true, X: sp.x, Y: sp.y, Scale: 1.0,
-		}); err != nil {
+		if err := fleet.RegisterChrome(sp.id, b, true, sp.x, sp.y, 1.0); err != nil {
 			stdlog.Fatalf("register %s: %v", sp.id, err)
 		}
 	}
@@ -179,23 +177,23 @@ func main() {
 // runScript drives one browser through the 5-action sequence and verifies
 // the final page state. round1 is typed first then replaced by round2 via
 // ClearFirst — the second TypeAction's ClearFirst is the regression check.
-func runScript(fleet *chromefleet.Fleet, b *chromekit.Browser, id string, srv *testpage.Server, stt int, round1, round2 string, timeout time.Duration) error {
+func runScript(fleet *automationfleet.Fleet, b *chromekit.Browser, id string, srv *testpage.Server, stt int, round1, round2 string, timeout time.Duration) error {
 	step1ID := fmt.Sprintf("step1-%d", stt)
 	step2ID := fmt.Sprintf("step2-%d", stt)
 
 	// 1) Navigate ?id=step1-{stt}
-	if err := submitWait(fleet, id, chromefleet.NavigateAction{URL: srv.PageURL(step1ID), Timeout: timeout}); err != nil {
+	if err := submitWait(fleet, id, automationfleet.NavigateAction{URL: srv.PageURL(step1ID), Timeout: timeout}); err != nil {
 		return fmt.Errorf("nav %s: %w", step1ID, err)
 	}
 	// 2) Navigate ?id=step2-{stt}
-	if err := submitWait(fleet, id, chromefleet.NavigateAction{URL: srv.PageURL(step2ID), Timeout: timeout}); err != nil {
+	if err := submitWait(fleet, id, automationfleet.NavigateAction{URL: srv.PageURL(step2ID), Timeout: timeout}); err != nil {
 		return fmt.Errorf("nav %s: %w", step2ID, err)
 	}
 	if err := b.Current().WaitForSelector("#q", 10*time.Second); err != nil {
 		return fmt.Errorf("wait #q after %s: %w", step2ID, err)
 	}
 	// 3) Round 1: type round1 (clear-first defensive — field should be empty).
-	if err := submitWait(fleet, id, chromefleet.TypeAction{Selector: "#q", Text: round1, ClearFirst: true}); err != nil {
+	if err := submitWait(fleet, id, automationfleet.TypeAction{Selector: "#q", Text: round1, ClearFirst: true}); err != nil {
 		return fmt.Errorf("type round1 %q: %w", round1, err)
 	}
 	// 3a) Sanity: round1 actually landed in the field.
@@ -207,11 +205,11 @@ func runScript(fleet *chromefleet.Fleet, b *chromekit.Browser, id string, srv *t
 		return fmt.Errorf("round1 mismatch: want %q, got %q", round1, qAfterR1)
 	}
 	// 4) Round 2: type round2 with ClearFirst — must REPLACE round1, not append.
-	if err := submitWait(fleet, id, chromefleet.TypeAction{Selector: "#q", Text: round2, ClearFirst: true}); err != nil {
+	if err := submitWait(fleet, id, automationfleet.TypeAction{Selector: "#q", Text: round2, ClearFirst: true}); err != nil {
 		return fmt.Errorf("type round2 %q: %w", round2, err)
 	}
 	// 5) Click submit
-	if err := submitWait(fleet, id, chromefleet.ClickAction{Selector: "#submit"}); err != nil {
+	if err := submitWait(fleet, id, automationfleet.ClickAction{Selector: "#submit"}); err != nil {
 		return fmt.Errorf("click submit: %w", err)
 	}
 
@@ -250,13 +248,13 @@ func runScript(fleet *chromefleet.Fleet, b *chromekit.Browser, id string, srv *t
 	return nil
 }
 
-func submitWait(fleet *chromefleet.Fleet, id string, action chromefleet.Action) error {
-	ch, err := fleet.Submit(chromefleet.Job{BrowserID: id, Action: action, Priority: 5})
+func submitWait(fleet *automationfleet.Fleet, id string, action automationfleet.Action) error {
+	ch, err := fleet.Submit(automationfleet.Job{BrowserID: id, Action: action, Priority: 5})
 	if err != nil {
 		return fmt.Errorf("submit: %w", err)
 	}
 	r := <-ch
-	if r.Status != chromefleet.StatusDone {
+	if r.Status != automationfleet.StatusDone {
 		return fmt.Errorf("status=%s err=%v", r.Status, r.Err)
 	}
 	return nil

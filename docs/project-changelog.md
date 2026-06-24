@@ -1,6 +1,26 @@
 # Project Changelog
 
-All notable changes to chromefleet are documented here. Format: date, version, summary.
+All notable changes to automationfleet are documented here. Format: date, version, summary.
+
+---
+
+## [Unreleased] — 2026-06-25 — Rename + multi-driver (chromekit + firefoxkit)
+
+### Changed (BREAKING)
+- Renamed module/package `chromefleet` → `automationfleet` (in-place, no alias). All imports `github.com/tuwibu/chromefleet` → `github.com/tuwibu/automationfleet`.
+- `BrowserHandle.Browser *chromekit.Browser` → `BrowserHandle.Driver Driver` (kit-agnostic interface).
+
+### Added
+- `Driver` / `Page` / `Mouse` / `Keyboard` interfaces + `Backend` enum + `BoundingBox` (`driver.go`) — abstraction layer over per-browser kits.
+- `adapter_chromekit.go` (`WrapChrome`) + `adapter_firefoxkit.go` (`WrapFirefox`) — adapters; only files importing the kits.
+- `Fleet.RegisterChrome` / `Fleet.RegisterFirefox` typed helpers.
+- `examples/mixed_fleet` — Chrome (native) + Firefox (BiDi) driven through one fleet.
+- firefoxkit dependency via `replace => ../firefoxkit` (monorepo-internal; unpublished).
+
+### Known limitations
+- Firefox native input has a content-offset gap in firefoxkit (CSS origin maps to window top-left) — register firefox with `native=false` (BiDi/Remote). Chrome native unaffected.
+- Concurrent jobs to the same firefox browser may interleave over its single BiDi connection — avoid parallel same-browser submission or tune `WithCDPWorkers`.
+- Real-browser smoke tests (firefox click/type/scroll/navigate landing-point) pending a Windows host with Chrome + Firefox.
 
 ---
 
@@ -229,7 +249,7 @@ This changelog is updated at:
 
 ## Links
 
-- **GitHub:** [chromefleet](https://github.com/tuwibu/chromefleet)
+- **GitHub:** [automationfleet](https://github.com/tuwibu/automationfleet)
 - **Dependency:** [chromekit](../chromekit)
-- **Go Package:** pkg.go.dev/github.com/tuwibu/chromefleet (post-v1.0.0)
+- **Go Package:** pkg.go.dev/github.com/tuwibu/automationfleet (post-v1.0.0)
 - **Docs:** See adjacent markdown files in `docs/`.

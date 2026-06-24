@@ -1,8 +1,8 @@
-# chromefleet
+# automationfleet
 
-Orchestrator on top of [chromekit](https://github.com/tuwibu/chromekit) (v0.6.1) for driving N Chrome instances with dual-path routing: native input (mouse + keyboard) under a serialized critical section, or parallel human-like CDP actions (bezier cursor, TypeHuman, ClearInput) per per-handle `Native` flag.
+Orchestrator for driving N browser instances — **Chrome** (via [chromekit](https://github.com/tuwibu/chromekit)) and **Firefox** (via [firefoxkit](https://github.com/tuwibu/firefoxkit)) — through one fleet, with dual-path routing: native input (mouse + keyboard) under a serialized critical section, or parallel human-like remote actions (bezier cursor, TypeHuman, ClearInput) per per-handle `Native` flag.
 
-**Why a separate repo?** chromekit is a per-browser library. Multi-browser scheduling — priority queue, per-handle routing, focus arbitration, hotkey controls — is a different concern. Keeping them split lets chromekit stay small and chromefleet evolve independently.
+**Driver abstraction.** The fleet talks to a `Driver` interface, not a concrete kit. Two thin adapters (`WrapChrome`, `WrapFirefox`) bridge chromekit/firefoxkit into the fleet; the kits stay unmodified and independently versioned. The dispatcher, queue, focus arbitration, and hotkey controls are kit-agnostic.
 
 ## Architecture
 
@@ -47,9 +47,9 @@ Each browser runs independently on a CDP worker; human-like behavior avoids bot 
 ## Quick start
 
 ```go
-fleet := chromefleet.New(
-    chromefleet.WithLogger(myLogger),
-    chromefleet.WithDefaultTimeout(10*time.Second),
+fleet := automationfleet.New(
+    automationfleet.WithLogger(myLogger),
+    automationfleet.WithDefaultTimeout(10*time.Second),
 )
 fleet.Start()
 defer fleet.Stop()
@@ -57,13 +57,11 @@ defer fleet.Stop()
 b1, _ := chromekit.Connect(9222,
     chromekit.WithInputBackend(chromekit.BackendNative),
     chromekit.WithNativeWindow(0, 0, 1.0))
-fleet.Register(&chromefleet.BrowserHandle{
-    ID: "b1", Browser: b1, X: 0, Y: 0, Scale: 1.0, Native: true,
-})
+fleet.RegisterChrome("b1", b1, true, 0, 0, 1.0) // id, browser, native, x, y, scale
 
-ch, _ := fleet.Submit(chromefleet.Job{
+ch, _ := fleet.Submit(automationfleet.Job{
     BrowserID: "b1",
-    Action:    chromefleet.TypeAction{Selector: "input[name=q]", Text: "hello"},
+    Action:    automationfleet.TypeAction{Selector: "input[name=q]", Text: "hello"},
     Priority:  5,
 })
 result := <-ch
@@ -78,24 +76,38 @@ result := <-ch
 Customize stop hotkey:
 
 ```go
-hk, _ := chromefleet.ParseHotkey("Ctrl+Shift+Q")
-fleet := chromefleet.New(chromefleet.WithStopHotkey(hk))
+hk, _ := automationfleet.ParseHotkey("Ctrl+Shift+Q")
+fleet := automationfleet.New(automationfleet.WithStopHotkey(hk))
 ```
 
 Or programmatically: `fleet.Pause("reason")` / `fleet.Resume("reason")` / `fleet.Stop()`.
 
+## Drivers
+
+Register either kit through a typed helper — both wrap the browser in a `Driver` and route through the same dispatcher:
+
+```go
+fleet.RegisterChrome("chrome-1", chromeBrowser, true,  0, 0, 1.0) // native input path
+fleet.RegisterFirefox("firefox-1", ffBrowser,  false, 0, 0, 1.0) // Remote (BiDi) path
+```
+
+See [`examples/mixed_fleet`](examples/mixed_fleet/main.go) for a Chrome + Firefox fleet.
+
+**Firefox native input caveat:** firefoxkit builds its native input window without the content offset, so CSS (0,0) maps to the window top-left (tabs/omnibox) rather than the content origin. Register firefox with `native=false` (BiDi/Remote) — fully supported — until firefoxkit wires `MeasureContentOffset` into its native window. Chrome native input is unaffected.
+
 ## Dependencies
 
-- `github.com/tuwibu/chromekit` v0.6.1 — per-browser library for native input + CDP fallback
+- `github.com/tuwibu/chromekit` v0.6.1 — per-browser Chrome library (native input + CDP).
+- `github.com/tuwibu/firefoxkit` — per-browser Firefox library (native input + BiDi). **Unpublished**: consumed via `replace => ../firefoxkit`. This repo is **monorepo-internal** — clone all three repos side-by-side; the relative replace breaks external `go get`.
 
-<!-- stale: verify whether published version or local development. go.mod shows v0.6.1 require; no replace directive seen. -->
+> `go.mod` requires chromekit v0.6.1; the local `../chromekit` checkout may be ahead (e.g. v0.7.0). The pinned network version is what builds/tests run against.
 
 ## Status
 
 | Phase | Status |
 |------|--------|
 | 01 — chromekit prep (mutex, HWND, Focus) | ✅ done |
-| 02 — chromefleet bootstrap (types, skeleton) | ✅ done |
+| 02 — automationfleet bootstrap (types, skeleton) | ✅ done |
 | 03 — dispatcher (queue, critical section) | ✅ done |
 | 04 — hotkey listener | ✅ done |
 | 05 — PoC (2-browser, stress 9, hotkey demo) | ✅ done |

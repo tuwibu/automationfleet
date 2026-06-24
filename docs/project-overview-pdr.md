@@ -16,7 +16,7 @@
 **Why separate from chromekit?**
 - chromekit is per-browser (connect, focus, evaluate, screenshot, native input).
 - Multi-browser scheduling, priority queue, focus arbitration, hotkey abort are a separate domain.
-- Keeping them split lets chromekit stay small and chromefleet evolve independently.
+- Keeping them split lets chromekit stay small and automationfleet evolve independently.
 
 ## 2. Target Users
 

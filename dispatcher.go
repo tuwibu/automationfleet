@@ -1,4 +1,4 @@
-package chromefleet
+package automationfleet
 
 import (
 	"context"
@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/tuwibu/chromekit"
 )
 
 // Dispatcher owns the priority queue, the single native worker, and the CDP
@@ -34,7 +32,7 @@ type Dispatcher struct {
 // errCursorDrift signals the OS cursor moved during a critical section, most
 // likely because a human grabbed the mouse mid-job. Retried up to
 // cfg.driftRetries times with cfg.driftRetryDelay between attempts.
-var errCursorDrift = errors.New("chromefleet: cursor drift detected")
+var errCursorDrift = errors.New("automationfleet: cursor drift detected")
 
 func newDispatcher(f *Fleet) *Dispatcher {
 	d := &Dispatcher{fleet: f}
@@ -215,7 +213,7 @@ func (d *Dispatcher) runJob(qj *queuedJob, native bool) {
 		}
 	}
 	took := time.Since(start)
-	d.fleet.log.Infof("chromefleet: job=%d browser=%s action=%s status=%s took=%s err=%v",
+	d.fleet.log.Infof("automationfleet: job=%d browser=%s action=%s status=%s took=%s err=%v",
 		qj.id, qj.job.BrowserID, qj.job.Action.kind(), status, took, err)
 	d.completeJob(qj, JobResult{Status: status, Err: err, Took: took})
 }
@@ -227,7 +225,7 @@ func (d *Dispatcher) runJob(qj *queuedJob, native bool) {
 func (d *Dispatcher) executeCriticalWithRetry(ctx context.Context, h *BrowserHandle, a Action) error {
 	err := executeCritical(ctx, d.fleet, h, a)
 	for attempt := 1; attempt <= d.fleet.cfg.driftRetries && errors.Is(err, errCursorDrift); attempt++ {
-		d.fleet.log.Warnf("chromefleet: cursor drift on browser=%s action=%s — retry %d/%d", h.ID, a.kind(), attempt, d.fleet.cfg.driftRetries)
+		d.fleet.log.Warnf("automationfleet: cursor drift on browser=%s action=%s — retry %d/%d", h.ID, a.kind(), attempt, d.fleet.cfg.driftRetries)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -244,9 +242,9 @@ func (d *Dispatcher) executeCriticalWithRetry(ctx context.Context, h *BrowserHan
 // cursor/keyboard — no drift check needed, multiple browsers run in
 // parallel.
 func (d *Dispatcher) executeCDPOnly(ctx context.Context, h *BrowserHandle, a Action) error {
-	page := h.Browser.Current()
+	page := h.Driver.Current()
 	if page == nil {
-		return errors.New("chromefleet: no active page")
+		return errors.New("automationfleet: no active page")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -255,8 +253,7 @@ func (d *Dispatcher) executeCDPOnly(ctx context.Context, h *BrowserHandle, a Act
 	case ScrollAction:
 		return scrollViewport(ctx, page, act)
 	case WaitAction:
-		_, qerr := page.QuerySelector(act.Selector, act.Timeout)
-		return qerr
+		return page.WaitForSelector(act.Selector, act.Timeout)
 	case ClickAction:
 		// Mouse().Click = bezier glide + dwell + click. page.Click =
 		// chromedp.Click instant teleport → anti-bot detect.
@@ -280,12 +277,12 @@ func (d *Dispatcher) executeCDPOnly(ctx context.Context, h *BrowserHandle, a Act
 		}
 		return page.Navigate(act.URL, timeout)
 	default:
-		return fmt.Errorf("chromefleet: cdp path got unexpected action %s", a.kind())
+		return fmt.Errorf("automationfleet: cdp path got unexpected action %s", a.kind())
 	}
 }
 
 // scrollViewport scrolls either the viewport or a specific element.
-func scrollViewport(_ context.Context, page *chromekit.Page, a ScrollAction) error {
+func scrollViewport(_ context.Context, page Page, a ScrollAction) error {
 	if a.Selector != "" {
 		expr := fmt.Sprintf(`document.querySelector(%q)?.scrollBy(0, %f)`, a.Selector, a.DeltaY)
 		return page.Evaluate(expr, nil)

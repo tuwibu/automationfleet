@@ -1,4 +1,4 @@
-package chromefleet
+package automationfleet
 
 import (
 	"errors"
@@ -69,7 +69,7 @@ type queuedJob struct {
 }
 
 // ErrFleetStopped is returned by Submit after Stop or AbortAll.
-var ErrFleetStopped = errors.New("chromefleet: fleet stopped, not accepting new jobs")
+var ErrFleetStopped = errors.New("automationfleet: fleet stopped, not accepting new jobs")
 
 // ErrUnknownBrowser is returned when Job.BrowserID has not been Register'd.
-var ErrUnknownBrowser = errors.New("chromefleet: unknown browser id")
+var ErrUnknownBrowser = errors.New("automationfleet: unknown browser id")

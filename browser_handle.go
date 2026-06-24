@@ -1,24 +1,20 @@
-package chromefleet
+package automationfleet
 
-import (
-	"errors"
+import "errors"
 
-	"github.com/tuwibu/chromekit"
-)
-
-// BrowserHandle binds a chromekit.Browser to a fleet-stable ID. When Native
-// is true the Browser MUST have been launched with
-// chromekit.WithInputBackend(BackendNative) AND
-// chromekit.WithNativeWindow(X, Y, Scale) matching this struct — fleet routes
-// Click/Type/Navigate through the single native worker with cursor drift
-// checks. When Native is false (default) those actions run via CDP on the
-// parallel cdp pool — no drift check, X/Y/Scale ignored.
+// BrowserHandle binds a Driver (chromekit or firefoxkit, via WrapChrome /
+// WrapFirefox) to a fleet-stable ID. When Native is true the underlying browser
+// MUST have been launched with the native input backend AND with a native
+// window (X, Y, Scale) matching this struct — fleet routes Click/Type/Navigate
+// through the single native worker with cursor drift checks. When Native is
+// false (default) those actions run via CDP/BiDi on the parallel pool — no
+// drift check, X/Y/Scale ignored.
 type BrowserHandle struct {
-	ID      string
-	Browser *chromekit.Browser
-	X, Y    int
-	Scale   float64
-	Native  bool
+	ID     string
+	Driver Driver
+	X, Y   int
+	Scale  float64
+	Native bool
 }
 
 func (h *BrowserHandle) validate() error {
@@ -28,20 +24,20 @@ func (h *BrowserHandle) validate() error {
 	if h.ID == "" {
 		return errors.New("BrowserHandle: ID required")
 	}
-	if h.Browser == nil {
-		return errors.New("BrowserHandle: Browser required")
+	if h.Driver == nil {
+		return errors.New("BrowserHandle: Driver required")
 	}
 	if h.Scale <= 0 {
 		h.Scale = 1.0
 	}
-	// Defensive: handle.Native must match Browser's actual launch backend.
+	// Defensive: handle.Native must match the Driver's actual launch backend.
 	// Mismatch would cause silent drift-check failures (native handle on a
-	// CDP browser) or lost anti-bot guarantees (cdp handle on native browser).
-	if h.Native && h.Browser.InputBackend() != chromekit.BackendNative {
-		return errors.New("BrowserHandle: Native=true but Browser launched with BackendCDP")
+	// remote browser) or lost anti-bot guarantees (remote handle on native).
+	if h.Native && h.Driver.InputBackend() != BackendNative {
+		return errors.New("BrowserHandle: Native=true but Driver uses remote backend")
 	}
-	if !h.Native && h.Browser.InputBackend() == chromekit.BackendNative {
-		return errors.New("BrowserHandle: Native=false but Browser launched with BackendNative")
+	if !h.Native && h.Driver.InputBackend() == BackendNative {
+		return errors.New("BrowserHandle: Native=false but Driver uses native backend")
 	}
 	return nil
 }

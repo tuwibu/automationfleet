@@ -1,13 +1,21 @@
-module github.com/tuwibu/chromefleet
+module github.com/tuwibu/automationfleet
 
 go 1.26.2
 
-require github.com/tuwibu/chromekit v0.6.1
+require (
+	github.com/tuwibu/chromekit v0.6.1
+	github.com/tuwibu/firefoxkit v0.0.0-00010101000000-000000000000
+)
+
+// firefoxkit is unpublished (no tag) — monorepo-internal use only (RT-F9).
+// Clone all three repos side-by-side; this relative replace breaks external `go get`.
+replace github.com/tuwibu/firefoxkit => ../firefoxkit
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b // indirect
 	github.com/chromedp/chromedp v0.15.1 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
+	github.com/coder/websocket v1.8.14 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
