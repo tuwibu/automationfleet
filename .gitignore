@@ -20,3 +20,9 @@ Thumbs.db
 .claude/
 plans/
 .claudex.lock
+*.lock
+
+# Agent tooling + runtime state (not part of the library)
+.agents/
+.codex/
+session-state/
