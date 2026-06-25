@@ -98,9 +98,9 @@ See [`examples/mixed_fleet`](examples/mixed_fleet/main.go) for a Chrome + Firefo
 ## Dependencies
 
 - `github.com/tuwibu/chromekit` v0.6.1 — per-browser Chrome library (native input + CDP).
-- `github.com/tuwibu/firefoxkit` — per-browser Firefox library (native input + BiDi). **Unpublished**: consumed via `replace => ../firefoxkit`. This repo is **monorepo-internal** — clone all three repos side-by-side; the relative replace breaks external `go get`.
+- `github.com/tuwibu/firefoxkit` v0.1.0 — per-browser Firefox library (native input + BiDi).
 
-> `go.mod` requires chromekit v0.6.1; the local `../chromekit` checkout may be ahead (e.g. v0.7.0). The pinned network version is what builds/tests run against.
+Both are published modules — `go get github.com/tuwibu/automationfleet` works without any `replace` directive.
 
 ## Status
 

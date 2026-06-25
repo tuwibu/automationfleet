@@ -15,7 +15,7 @@ All notable changes to automationfleet are documented here. Format: date, versio
 - `adapter_chromekit.go` (`WrapChrome`) + `adapter_firefoxkit.go` (`WrapFirefox`) — adapters; only files importing the kits.
 - `Fleet.RegisterChrome` / `Fleet.RegisterFirefox` typed helpers.
 - `examples/mixed_fleet` — Chrome (native) + Firefox (BiDi) driven through one fleet.
-- firefoxkit dependency via `replace => ../firefoxkit` (monorepo-internal; unpublished).
+- firefoxkit dependency `v0.1.0` (published module, no `replace` — fleet is externally importable).
 
 ### Known limitations
 - Firefox native input has a content-offset gap in firefoxkit (CSS origin maps to window top-left) — register firefox with `native=false` (BiDi/Remote). Chrome native unaffected.

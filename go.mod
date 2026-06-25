@@ -4,12 +4,8 @@ go 1.26.2
 
 require (
 	github.com/tuwibu/chromekit v0.6.1
-	github.com/tuwibu/firefoxkit v0.0.0-00010101000000-000000000000
+	github.com/tuwibu/firefoxkit v0.1.0
 )
-
-// firefoxkit is unpublished (no tag) — monorepo-internal use only (RT-F9).
-// Clone all three repos side-by-side; this relative replace breaks external `go get`.
-replace github.com/tuwibu/firefoxkit => ../firefoxkit
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b // indirect

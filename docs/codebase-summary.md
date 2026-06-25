@@ -141,7 +141,7 @@ Windows API wrappers (syscall proxies) + cross-platform stubs.
 
 **Direct:**
 - `github.com/tuwibu/chromekit` v0.6.1 (Chrome driver)
-- `github.com/tuwibu/firefoxkit` (Firefox driver; unpublished, `replace => ../firefoxkit`, monorepo-internal)
+- `github.com/tuwibu/firefoxkit` v0.1.0 (Firefox driver; published, no replace)
 
 **Indirect (transitive from chromekit):**
 - chromedp/cdproto (Chrome DevTools Protocol)
