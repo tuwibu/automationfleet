@@ -10,13 +10,12 @@ import (
 
 // WrapFirefox adapts a firefoxkit.Browser into a fleet Driver.
 //
-// NOTE on native input (RT-F7): firefoxkit builds its native input Window from
-// WithNativeWindow's X/Y/Scale but leaves ContentOffsetX/Y at zero
-// (firefoxkit/page_input_backend.go), so CSS (0,0) maps to the window top-left
-// (tabs/omnibox), not the content origin. Native firefox clicks therefore land
-// at the wrong position regardless of the fleet's drift guard. Until firefoxkit
-// wires MeasureContentOffset into its input Window, register firefox browsers
-// with native=false (BiDi/Remote path), which is fully supported.
+// Native input: firefoxkit measures the live content origin via
+// MeasureContentOffset(HWND) and carries it as an absolute ContentOffsetX/Y
+// (page_input_backend.go nativeWindow/buildNativeWindow), so CSS (0,0) maps onto
+// the rendered content, not the tab/omnibox chrome. Both native=true and
+// native=false (BiDi/Remote) are supported; native requires the browser's HWND
+// to be resolvable (proc-backed Launch, or SetHWND on the Connect path).
 func WrapFirefox(b *firefoxkit.Browser) Driver { return firefoxDriver{b} }
 
 type firefoxDriver struct{ b *firefoxkit.Browser }
