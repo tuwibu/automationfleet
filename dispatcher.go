@@ -21,7 +21,11 @@ type Dispatcher struct {
 
 	started bool
 	stopped bool
-	paused  bool
+	// pauseReasons holds every active pause source (e.g. "ui", "hotkey",
+	// "user-takeover"). The dispatcher is paused while the set is non-empty, so
+	// one source resuming (e.g. the takeover watchdog after 10s idle) cannot
+	// un-pause a fleet another source (manual UI/hotkey) is still holding.
+	pauseReasons map[string]struct{}
 
 	inflight sync.WaitGroup
 
@@ -35,9 +39,21 @@ type Dispatcher struct {
 var errCursorDrift = errors.New("automationfleet: cursor drift detected")
 
 func newDispatcher(f *Fleet) *Dispatcher {
-	d := &Dispatcher{fleet: f}
+	d := &Dispatcher{fleet: f, pauseReasons: make(map[string]struct{})}
 	d.cond = sync.NewCond(&d.mu)
 	return d
+}
+
+// isPaused reports whether any pause reason is active. Caller must hold d.mu.
+func (d *Dispatcher) isPaused() bool { return len(d.pauseReasons) > 0 }
+
+// hasReason reports whether a specific pause source is currently active. Takes
+// d.mu itself — safe to call from a concurrent status reader (e.g. the 1Hz tick).
+func (d *Dispatcher) hasReason(reason string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.pauseReasons[reason]
+	return ok
 }
 
 // start spins up workers. No-op on second call.
@@ -114,27 +130,39 @@ func (d *Dispatcher) abortAll(reason string) {
 // waitDrained blocks until in-flight + queue both reach zero.
 func (d *Dispatcher) waitDrained() { d.inflight.Wait() }
 
-// pause flips the paused flag. Returns true on the transition from running
-// to paused (so callers can fire OnPause exactly once).
-func (d *Dispatcher) pause() bool {
+// pause adds reason to the active set. Returns true only on the running→paused
+// transition (empty set → non-empty), so callers fire OnPause exactly once
+// regardless of how many sources pause. Adding an already-present reason is a
+// no-op. Add + transition-detection happen under one lock (same atomicity the
+// old bool had).
+func (d *Dispatcher) pause(reason string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.paused || d.stopped {
+	if d.stopped {
 		return false
 	}
-	d.paused = true
-	return true
+	was := d.isPaused()
+	d.pauseReasons[reason] = struct{}{}
+	return !was
 }
 
-// resume clears the paused flag and wakes blocked workers. Returns true on
-// the transition from paused to running.
-func (d *Dispatcher) resume() bool {
+// resume removes reason from the active set and wakes blocked workers only when
+// the set becomes empty. Returns true only on the paused→running transition, so
+// one source resuming cannot un-pause a fleet another source still holds.
+// Removing an absent reason is a no-op.
+func (d *Dispatcher) resume(reason string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.paused || d.stopped {
+	if d.stopped {
 		return false
 	}
-	d.paused = false
+	if _, ok := d.pauseReasons[reason]; !ok {
+		return false
+	}
+	delete(d.pauseReasons, reason)
+	if d.isPaused() {
+		return false
+	}
 	d.cond.Broadcast()
 	return true
 }
@@ -146,7 +174,7 @@ func (d *Dispatcher) nativeWorker() {
 	for {
 		d.mu.Lock()
 		// Wait while: queue empty OR paused (and not stopped).
-		for !d.stopped && (d.queue.Len() == 0 || d.paused) {
+		for !d.stopped && (d.queue.Len() == 0 || d.isPaused()) {
 			d.cond.Wait()
 		}
 		if d.stopped && d.queue.Len() == 0 {

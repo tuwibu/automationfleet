@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuwibu/automationfleet/internal/winapi"
 	"github.com/tuwibu/chromekit"
 	"github.com/tuwibu/firefoxkit"
 )
@@ -207,13 +208,21 @@ type Fleet struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.RWMutex
-	handles  map[string]*BrowserHandle
-	stopped  bool
-	stopOnce sync.Once
+	mu          sync.RWMutex
+	handles     map[string]*BrowserHandle
+	nativeCount int // # of registered handles with Native=true; gates the takeover hook
+	stopped     bool
+	stopOnce    sync.Once
 
 	dispatcher *Dispatcher
 	hotkeyDone chan struct{}
+
+	// Mouse-takeover watchdog, installed only while ≥1 native browser is
+	// registered. takeoverMu serializes install/uninstall independently of mu so
+	// the OS hook syscalls never run under the registry lock.
+	takeoverMu    sync.Mutex
+	watchdog      *takeoverWatchdog
+	hookUninstall func()
 }
 
 // New builds a Fleet. Call Start() before Submit.
@@ -241,11 +250,17 @@ func (f *Fleet) Register(h *BrowserHandle) error {
 		return err
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if _, exists := f.handles[h.ID]; exists {
+		f.mu.Unlock()
 		return errors.New("automationfleet: browser id already registered: " + h.ID)
 	}
 	f.handles[h.ID] = h
+	if h.Native {
+		f.nativeCount++
+	}
+	f.mu.Unlock()
+
+	f.reconcileTakeover()
 	return nil
 }
 
@@ -283,12 +298,84 @@ func (f *Fleet) RegisterFirefox(id string, b *firefoxkit.Browser, native bool, x
 // registry holds a stale handle forever and the next Register rejects.
 func (f *Fleet) Unregister(id string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, exists := f.handles[id]; !exists {
+	h, exists := f.handles[id]
+	if !exists {
+		f.mu.Unlock()
 		return ErrUnknownBrowser
 	}
 	delete(f.handles, id)
+	// Read Native BEFORE the handle is gone so the count stays balanced —
+	// decrementing on a non-native handle would corrupt the hook gate.
+	if h.Native && f.nativeCount > 0 {
+		f.nativeCount--
+	}
+	f.mu.Unlock()
+
+	f.reconcileTakeover()
 	return nil
+}
+
+// reconcileTakeover installs or uninstalls the mouse-takeover watchdog to match
+// the current native-handle count. Idempotent and order-independent: it reads
+// the authoritative count rather than trusting a single transition edge, so
+// racing Register/Unregister calls converge on the correct state. BiDi-only
+// fleets (nativeCount==0) pay zero hook overhead.
+func (f *Fleet) reconcileTakeover() {
+	f.takeoverMu.Lock()
+	defer f.takeoverMu.Unlock()
+
+	f.mu.RLock()
+	want := f.nativeCount > 0 && !f.stopped
+	f.mu.RUnlock()
+
+	installed := f.watchdog != nil
+	switch {
+	case want && !installed:
+		f.startTakeoverLocked()
+	case !want && installed:
+		f.stopTakeoverLocked()
+	}
+}
+
+// startTakeoverLocked spins up the watchdog and installs the low-level mouse
+// hook. Caller must hold f.takeoverMu. If the hook fails to install, the
+// watchdog is torn down (without a hook it can never fire) and the fleet keeps
+// running without takeover — logged, never fatal.
+func (f *Fleet) startTakeoverLocked() {
+	w := newTakeoverWatchdog(takeoverIdle,
+		func() { f.Pause(ReasonUserTakeover) },
+		func() { f.Resume(ReasonUserTakeover) })
+	w.start()
+	uninstall, err := winapi.InstallMouseHook(w.notify)
+	if err != nil {
+		f.log.Warnf("automationfleet: mouse takeover watchdog disabled: %v", err)
+		w.stop()
+		return
+	}
+	f.watchdog = w
+	f.hookUninstall = uninstall
+	f.log.Infof("automationfleet: mouse takeover watchdog installed")
+}
+
+// stopTakeoverLocked uninstalls the hook and stops the watchdog (which clears
+// any lingering "user-takeover" pause). Caller must hold f.takeoverMu.
+//
+// Ordering matters: hookUninstall() first blocks until the message-pump thread
+// exits (no more notify() calls can arrive), THEN watchdog.stop() blocks until
+// the run loop drains — and stop() resumes before it closes its done channel,
+// so once this returns the ReasonUserTakeover pause is guaranteed cleared. A
+// concurrent Snapshot()/hasReason() may still observe the pause momentarily
+// while teardown is in flight; that is benign (it clears within one tick).
+func (f *Fleet) stopTakeoverLocked() {
+	if f.hookUninstall != nil {
+		f.hookUninstall()
+		f.hookUninstall = nil
+	}
+	if f.watchdog != nil {
+		f.watchdog.stop()
+		f.watchdog = nil
+	}
+	f.log.Infof("automationfleet: mouse takeover watchdog removed")
 }
 
 // Start spawns dispatcher workers and the hotkey listener (if any hotkey
@@ -330,7 +417,7 @@ func (f *Fleet) Start() {
 // Pause stops the dispatcher from popping new jobs. In-flight jobs continue
 // to completion. Idempotent — calling twice fires OnPause once.
 func (f *Fleet) Pause(reason string) {
-	if f.dispatcher.pause() {
+	if f.dispatcher.pause(reason) {
 		f.log.Infof("automationfleet: pause requested (%s)", reason)
 		if f.cfg.onPause != nil {
 			func() {
@@ -348,7 +435,7 @@ func (f *Fleet) Pause(reason string) {
 // Resume unblocks the dispatcher to pop pending jobs. Idempotent — fires
 // OnResume only when transitioning from paused to running.
 func (f *Fleet) Resume(reason string) {
-	if f.dispatcher.resume() {
+	if f.dispatcher.resume(reason) {
 		f.log.Infof("automationfleet: resume requested (%s)", reason)
 		if f.cfg.onResume != nil {
 			func() {
@@ -413,6 +500,7 @@ func (f *Fleet) requestStop(reason string) {
 		f.mu.Lock()
 		f.stopped = true
 		f.mu.Unlock()
+		f.reconcileTakeover() // tear down the takeover hook now that we're stopped
 		if f.cfg.onStop != nil {
 			func() {
 				defer func() {
@@ -426,6 +514,28 @@ func (f *Fleet) requestStop(reason string) {
 		f.dispatcher.abortAll(reason)
 		f.cancel()
 	})
+}
+
+// Snapshot is a point-in-time view of takeover-relevant fleet state, built as a
+// new public surface because automationfleet has no generic Stats API. HasNative
+// reports whether ≥1 native browser is registered (the takeover hook only runs
+// then); AutoPaused reports whether the takeover watchdog currently holds the
+// fleet paused via the "user-takeover" reason. Safe to call concurrently (e.g.
+// from a 1Hz status tick) — each field is read under its owning lock.
+type Snapshot struct {
+	HasNative  bool
+	AutoPaused bool
+}
+
+// Snapshot returns the current takeover-relevant fleet state.
+func (f *Fleet) Snapshot() Snapshot {
+	f.mu.RLock()
+	hasNative := f.nativeCount > 0
+	f.mu.RUnlock()
+	return Snapshot{
+		HasNative:  hasNative,
+		AutoPaused: f.dispatcher.hasReason(ReasonUserTakeover),
+	}
 }
 
 // handle looks up a registered browser by id; returns nil when missing.
