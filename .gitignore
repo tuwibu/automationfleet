@@ -4,6 +4,7 @@
 *.out
 /bin/
 /dist/
+/vendor/
 
 # Editor
 .vscode/
